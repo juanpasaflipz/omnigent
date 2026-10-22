@@ -3218,8 +3218,9 @@ def test_ensure_backend_databricks_preflight_skips_when_authenticated(
 
 
 @pytest.mark.parametrize("refresh_credentials", [False, True])
+@pytest.mark.parametrize("use_pin", [False, True])
 def test_databricks_preflight_rejects_workspace_mismatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refresh_credentials: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refresh_credentials: bool, use_pin: bool
 ) -> None:
     """A successful cached or refreshed bearer cannot validate the wrong workspace."""
     import httpx
@@ -3229,9 +3230,12 @@ def test_databricks_preflight_rejects_workspace_mismatch(
     server = "https://example.databricks.com/api/2.0/omnigent"
     auth_file = tmp_path / "auth_tokens.json"
     monkeypatch.setattr("omnigent.cli_auth._token_file_path", lambda: auth_file)
-    store_databricks_auth(server, "https://example.databricks.com", org_id="123456")
+    store_databricks_auth(
+        server, "https://example.databricks.com", org_id="123456" if use_pin else "123"
+    )
     original_auth = auth_file.read_bytes()
-    pin_databricks_org_id(server, "123")
+    if use_pin:
+        pin_databricks_org_id(server, "123")
     responses = []
     if refresh_credentials:
         responses.append(
@@ -3250,7 +3254,9 @@ def test_databricks_preflight_rejects_workspace_mismatch(
     )
     monkeypatch.setattr(cli, "_databricks_login", lambda *args, **kwargs: pytest.fail("login"))
 
-    with pytest.raises(click.ClickException, match=r"workspace 123.*workspace 123456"):
+    with pytest.raises(
+        click.ClickException, match=r"Requested workspace 123,.*reports workspace 123456\."
+    ):
         cli._ensure_databricks_server_auth(server, non_interactive=True)
 
     assert not responses

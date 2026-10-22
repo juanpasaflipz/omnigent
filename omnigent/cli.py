@@ -3960,6 +3960,22 @@ def _verified_databricks_org_id(
     return reported_org_id or requested_org_id
 
 
+def _persist_databricks_org_id(server: str, org_id: str) -> None:
+    """Save a verified selector with an actionable error on write failure."""
+    from omnigent.cli_auth import store_databricks_org_id
+    from omnigent.cli_diagnostics import SUPPRESS_RECOVERY_HINT_ATTR
+
+    try:
+        store_databricks_org_id(server, org_id)
+    except OSError as error:
+        exc = click.ClickException(
+            "Could not persist the workspace routing selector. "
+            "Check that the Omnigent data directory is writable, then retry."
+        )
+        setattr(exc, SUPPRESS_RECOVERY_HINT_ATTR, True)
+        raise exc from error
+
+
 def _ensure_databricks_server_auth(server: str, *, non_interactive: bool = False) -> None:
     """Sign in (or fail with the login hint) for Databricks-fronted servers.
 
@@ -3997,7 +4013,6 @@ def _ensure_databricks_server_auth(server: str, *, non_interactive: bool = False
         load_databricks_workspace_host,
         pinned_databricks_org_id,
         store_databricks_auth,
-        store_databricks_org_id,
     )
 
     org_id = load_databricks_org_id(server)
@@ -4011,7 +4026,7 @@ def _ensure_databricks_server_auth(server: str, *, non_interactive: bool = False
     if probe.status_code == 200:
         org_id = _verified_databricks_org_id(probe, org_id)
         if org_id and is_workspace_hosted_url(server):
-            store_databricks_org_id(server, org_id)
+            _persist_databricks_org_id(server, org_id)
         return
     workspace_host = _databricks_workspace_login_target(server, probe)
     credential_rejected = False
@@ -13642,9 +13657,7 @@ def login(server_url: str) -> None:
     elif probe.status_code == 200:
         org_id = _verified_databricks_org_id(probe, org_id)
         if org_id and resolved.is_workspace_hosted:
-            from omnigent.cli_auth import store_databricks_org_id
-
-            store_databricks_org_id(server, org_id)
+            _persist_databricks_org_id(server, org_id)
         # Header mode (or already authenticated). Tell the user
         # they don't need to log in and exit cleanly.
         click.echo(

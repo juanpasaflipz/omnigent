@@ -104,7 +104,8 @@ def test_login_rejects_truncated_workspace_selector(tmp_path: Path) -> None:
         (tmp_path / "mismatched-login.txt").write_text(output)
         assert f"{MOUNT}/v1/me?o=123" in workspace.authenticated_requests
         assert result.returncode != 0, output
-        assert "workspace 123" in output and f"workspace {WORKSPACE_ID}" in output
+        assert "Requested workspace 123," in output
+        assert f"reports workspace {WORKSPACE_ID}." in output
         assert "truncated" in output
         assert "omnigent stop" not in output
         assert auth_file.read_bytes() == original_auth
