@@ -28,7 +28,11 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from omnigent.entities.session_resources import SessionResourceView, terminal_resource_view
+from omnigent.entities.session_resources import (
+    SessionResourceView,
+    terminal_resource_id,
+    terminal_resource_view,
+)
 from omnigent.harnesses.claude_native.bridge import (
     BRIDGE_ID_LABEL_KEY,
     bridge_dir_for_bridge_id,
@@ -38,7 +42,8 @@ from omnigent.inner.datamodel import TerminalEnvSpec
 from omnigent.runner import create_runner_app
 from omnigent.runner.native import ResolvedSpec
 from omnigent.spec.types import AgentSpec, ExecutorSpec, MCPServerConfig, ToolsConfig
-from omnigent.terminals import TerminalListEntry
+from omnigent.terminals import TerminalListEntry, TerminalRegistry
+from omnigent.terminals.pane_reaper import PaneRef
 from tests.runner.conftest import _FakeProcessManager, _ScriptedHarnessClient, _sse
 from tests.runner.helpers import NullServerClient, make_test_terminal_instance
 
@@ -468,6 +473,69 @@ async def test_repeated_terminal_launch_keeps_single_relay(relay_env: _RelayEnv)
         f"second launch rebound the relay ({first_url!r} -> {second_url!r}); "
         f"the idempotency guard did not hold"
     )
+
+
+class _ReapableStubResourceRegistry(_StubResourceRegistry):
+    """Stub with a terminal registry, so the runner wires its idle pane reaper."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        super().__init__(tmp_path)
+        self.terminal_registry = TerminalRegistry()  # type: ignore[assignment]
+        # Re-register the pane on close, as a message re-creating the session would.
+        self.recreate_on_close = False
+
+    async def close_terminal(self, session_id: str, terminal_id: str) -> bool:
+        """The stub launched no pane, so there is nothing to close."""
+        del terminal_id
+        if self.recreate_on_close:
+            pane = make_test_terminal_instance("claude", "main", self._tmp_path)
+            self.terminal_registry._by_conversation[session_id] = {("claude", "main"): pane}
+        return True
+
+
+@pytest.mark.asyncio
+async def test_idle_pane_reap_closes_comment_relay(tmp_path: Path) -> None:
+    """Reaping an idle pane closes its relay, unless a re-create reused it meanwhile."""
+    resource_registry = _ReapableStubResourceRegistry(tmp_path)
+    app = create_runner_app(
+        resource_registry=resource_registry,
+        server_client=NullServerClient(),  # type: ignore[arg-type]
+    )
+    reaper = app.state.native_pane_reaper
+    assert reaper is not None
+    session_id = f"conv_{uuid.uuid4().hex[:12]}"
+    bridge_dir = bridge_dir_for_bridge_id(session_id)
+    prepare_bridge_dir(session_id, workspace=tmp_path)
+    relay_file = bridge_dir / _TOOL_RELAY_FILE
+    pane = PaneRef(
+        session_id, terminal_resource_id("claude", "main"), "claude", tmp_path / "tmux.sock"
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://runner") as client:
+        try:
+            resp = await _launch_terminal(client, session_id, bridge_inject_dir=True)
+            assert resp.status_code == 200, resp.text
+            relay_url = json.loads(relay_file.read_text())["url"]
+
+            await reaper._reap(pane)
+            # A surviving relay keeps a listening socket per reaped session
+            # until the session is deleted, exhausting the runner's descriptors.
+            assert not relay_file.exists(), "tool_relay.json survived the idle reap"
+            with pytest.raises(httpx.ConnectError):
+                async with httpx.AsyncClient() as probe:
+                    await probe.get(relay_url, timeout=2.0)
+
+            resp = await _launch_terminal(client, session_id, bridge_inject_dir=True)
+            assert resp.status_code == 200, resp.text
+            resource_registry.recreate_on_close = True
+            await reaper._reap(pane)
+            # The re-created pane reuses the relay, so it must keep serving.
+            async with httpx.AsyncClient() as probe:
+                await probe.get(json.loads(relay_file.read_text())["url"], timeout=2.0)
+        finally:
+            with contextlib.suppress(httpx.HTTPError):
+                await client.delete(f"/v1/sessions/{session_id}")
+            shutil.rmtree(bridge_dir, ignore_errors=True)
 
 
 @pytest.mark.asyncio

@@ -111,6 +111,8 @@ from omnigent.runner.mcp_execution_registry import (
 from omnigent.runner.mcp_routes import register_mcp_routes
 from omnigent.runner.model_option_routes import register_model_option_routes
 from omnigent.runner.native import (
+    _AUTO_FORWARDER_TASKS,
+    _AUTO_OPENCODE_SERVERS,
     _REPL_TERMINAL_NAME,
     _REPL_TERMINAL_SESSION_KEY,
     _SESSION_METADATA_PARAMS,
@@ -7813,17 +7815,33 @@ def create_runner_app(
             )
 
         async def _reap_native_pane(pane: PaneRef) -> None:
+            conv_id = pane.conversation_id
+            # A message can re-create the session while the close awaits pane
+            # shutdown; capture what this pane owned so only that is released.
+            forwarder = _AUTO_FORWARDER_TASKS.get(conv_id)
+            opencode_server = _AUTO_OPENCODE_SERVERS.get(conv_id)
+            relay_binding = _session_comment_relays.get(conv_id)
             try:
-                await resource_registry.close_terminal(pane.conversation_id, pane.terminal_id)
+                await resource_registry.close_terminal(conv_id, pane.terminal_id)
             finally:
-                # Closing the codex TUI pane leaves its per-session app-server
-                # (and forwarder) running — no-op for other harnesses. Tear it
-                # down in ``finally`` so an idle-reaped codex session can't orphan
-                # a ``codex app-server`` for the runner's lifetime even when the
-                # pane close above partially fails (the very leak this guards).
-                await _native_runtime.teardown_codex_native_app_server(pane.conversation_id)
+                # Closing a pane leaves its forwarder, helper server and tool
+                # relay running for the runner's lifetime. Release them in
+                # ``finally`` so a partially failed close cannot leak them.
+                await _native_runtime.teardown_codex_native_app_server(conv_id)
+                if forwarder is not None:
+                    await _cancel_auto_forwarder_task(conv_id, expected=forwarder)
+                if opencode_server is not None:
+                    await _native_runtime.teardown_opencode_native_server(
+                        conv_id, expected=opencode_server
+                    )
+                # A re-create during the close reuses the relay instead of replacing it.
+                if (
+                    relay_binding is not None
+                    and _pane_reaper_registry.get(conv_id, pane.terminal_name, "main") is None
+                ):
+                    _discard_comment_relay(conv_id, relay_binding.relay)
                 _publish_terminal_deleted_event(
-                    conversation_id=pane.conversation_id,
+                    conversation_id=conv_id,
                     terminal_name=pane.terminal_name,
                     session_key="main",
                     publish_event=_publish_event,

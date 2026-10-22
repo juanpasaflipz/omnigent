@@ -194,7 +194,9 @@ class _CodexNativeModelOptionsNotReady(RuntimeError):
     """Raised when Codex model options are requested before bridge startup."""
 
 
-async def _cancel_auto_forwarder_task(session_id: str) -> None:
+async def _cancel_auto_forwarder_task(
+    session_id: str, *, expected: asyncio.Task[object] | None = None
+) -> None:
     """
     Cancel and await the session's registered transcript forwarder, if any.
 
@@ -206,8 +208,12 @@ async def _cancel_auto_forwarder_task(session_id: str) -> None:
     for external conversation items).
 
     :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param expected: When given, cancel only if this task still holds the
+        slot, so a forwarder registered by a concurrent re-create keeps running.
     :returns: None.
     """
+    if expected is not None and _AUTO_FORWARDER_TASKS.get(session_id) is not expected:
+        return
     task = _AUTO_FORWARDER_TASKS.pop(session_id, None)
     if task is None or task.done():
         return
@@ -284,9 +290,18 @@ async def teardown_all_codex_native_app_servers() -> None:
             await teardown_codex_native_app_server(session_id)
 
 
-async def teardown_opencode_native_server(session_id: str) -> None:
-    """Cancel the forwarder and close any remaining server for this session."""
-    if session_id not in _AUTO_OPENCODE_SERVERS:
+async def teardown_opencode_native_server(
+    session_id: str, *, expected: OpenCodeNativeServer | None = None
+) -> None:
+    """Cancel the forwarder and close any remaining server for this session.
+
+    :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
+    :param expected: When given, tear down only if this server is still
+        registered, so a server started by a concurrent re-create keeps running.
+    :returns: None.
+    """
+    registered = _AUTO_OPENCODE_SERVERS.get(session_id)
+    if registered is None or (expected is not None and registered is not expected):
         return
     await _cancel_auto_forwarder_task(session_id)
     leftover_server = _AUTO_OPENCODE_SERVERS.pop(session_id, None)
