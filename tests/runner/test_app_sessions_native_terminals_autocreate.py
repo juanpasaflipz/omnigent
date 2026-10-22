@@ -162,13 +162,18 @@ def test_read_relay_policy_config_returns_none_when_session_id_absent(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("env_denylist", "expected_env_unset"),
+    ("instruction_spec", "env_denylist", "expected_env_unset"),
     [
-        (None, []),
+        ("missing", None, []),
         (
+            "missing",
             " OPENAI_API_KEY,ANTHROPIC_AUTH_TOKEN,OPENAI_API_KEY, ",
             ["ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"],
         ),
+        ("empty", None, []),
+        ("raw", None, []),
+        ("resolved", None, []),
+        ("resolved-replace", None, []),
     ],
 )
 async def test_auto_create_pi_terminal_launches_required_terminal(
@@ -176,23 +181,12 @@ async def test_auto_create_pi_terminal_launches_required_terminal(
     monkeypatch: pytest.MonkeyPatch,
     env_denylist: str | None,
     expected_env_unset: list[str],
+    instruction_spec: str,
 ) -> None:
-    """
-    Pi-native auto-create must launch a *required* terminal.
+    """Launch a required terminal with session-local authored instructions.
 
-    Regression guard for a missed call site. The pi-native runtime *is* the
-    terminal process (parity with claude-native), so when the lifecycle-aware
-    launch API replaced ``launch_terminal`` with ``launch_required_terminal`` /
-    ``launch_auxiliary_terminal``, ``_auto_create_pi_terminal`` had to move to
-    ``launch_required_terminal``. The fake registry below exposes *only*
-    ``launch_required_terminal`` (no ``launch_terminal``), so a stale call site
-    raises ``AttributeError`` here in CI instead of crashing in production the
-    moment a real pi-native session boots.
-
-    :param tmp_path: Pytest-provided temporary directory.
-    :param monkeypatch: Pytest monkeypatch fixture.
-    :param env_denylist: Optional operator-supplied credential variable names.
-    :param expected_env_unset: Variables the terminal must remove before launch.
+    The registry exposes only the required-terminal API; provider discovery
+    must leave the event loop responsive and preserve the operator denylist.
     """
     import omnigent.harnesses.pi_native.bridge as pi_native_bridge
     import omnigent.harnesses.pi_native.credentials as pi_native_credentials
@@ -224,7 +218,7 @@ async def test_auto_create_pi_terminal_launches_required_terminal(
         return _PiNativeLaunchConfig(
             workspace=tmp_path,
             server_url="http://127.0.0.1:8000",
-            terminal_launch_args=None,
+            terminal_launch_args=["--append-system-prompt", "User addition"],
             external_session_id=None,
         )
 
@@ -233,7 +227,7 @@ async def test_auto_create_pi_terminal_launches_required_terminal(
     captured: dict[str, Any] = {}
 
     class _FakeResourceRegistry:
-        """Records the launch; exposes ONLY the required-terminal launch API."""
+        """Omit launch_terminal so regressions to the optional-terminal API fail."""
 
         terminal_registry = None
 
@@ -262,11 +256,30 @@ async def test_auto_create_pi_terminal_launches_required_terminal(
 
     published: list[dict[str, Any]] = []
 
+    instructions = "  Follow the authored role. π\nKeep this whitespace.  "
+    agent_spec = None
+    if instruction_spec != "missing":
+        agent_spec = AgentSpec(
+            spec_version=1,
+            name="pi",
+            executor=ExecutorSpec(),
+            instructions=instructions if instruction_spec != "empty" else "   ",
+        )
+        if instruction_spec == "resolved-replace":
+            agent_spec.executor.config.update(context_files=False, system_prompt_mode="replace")
+        if instruction_spec.startswith("resolved"):
+            agent_spec = ResolvedSpec(spec=agent_spec, workdir=tmp_path)
+
+    bridge_dir = pi_native_bridge.prepare_bridge_dir("47f049b9d13df4db397c7f46859b825f")
+    instructions_path = bridge_dir / "agent_instructions.md"
+    instructions_path.write_text("Stale role")
+
     await _auto_create_pi_terminal(
         "47f049b9d13df4db397c7f46859b825f",
         _FakeResourceRegistry(),  # type: ignore[arg-type]
         lambda _sid, evt: published.append(evt),
         server_client=NullServerClient(),  # type: ignore[arg-type]
+        agent_spec=agent_spec,
     )
 
     # Required lifecycle (parity with claude-native), correct terminal identity.
@@ -285,6 +298,29 @@ async def test_auto_create_pi_terminal_launches_required_terminal(
     assert {"list_comments", "sys_session_list"} <= tool_names
     # The fresh terminal is surfaced on the live stream for the Terminal toggle.
     assert any(evt.get("type") == "session.resource.created" for evt in published)
+
+    args = captured["spec"].args
+    assert args[-2:] == ["--append-system-prompt", "User addition"]
+    if instruction_spec in {"raw", "resolved", "resolved-replace"}:
+        assert args.count("--append-system-prompt") == 2
+        prompt_flag = (
+            "--system-prompt"
+            if instruction_spec == "resolved-replace"
+            else "--append-system-prompt"
+        )
+        path = Path(args[args.index(prompt_flag) + 1])
+        assert ("--no-context-files" in args) is (instruction_spec == "resolved-replace")
+        if instruction_spec == "resolved-replace":
+            assert args[args.index("--append-system-prompt") + 1] == ""
+        assert (
+            path.parent
+            == Path(captured["spec"].env[pi_native_bridge.PI_NATIVE_CONFIG_ENV_VAR]).parent
+        )
+        assert path.read_text() == instructions
+        assert instructions not in args
+    else:
+        assert args.count("--append-system-prompt") == 1
+        assert not instructions_path.exists()
 
 
 @pytest.mark.asyncio

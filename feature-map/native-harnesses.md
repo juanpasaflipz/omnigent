@@ -10,6 +10,8 @@ implements them separately, so a fix for one harness does not reach the others.
 ## Sub-features
 
 - `launch-web`: pick the harness in the new-session composer and start a session.
+- `agent-instructions`: Pi native delivers authored instructions at launch/resume;
+  authors can keep or replace Pi's base prompt and disable automatic context files.
 - `launch-cli`: `omnigent <name>` starts the harness in the user's terminal with
   an Omnigent session behind it.
 - `gemini-gateways`: configure native Gemini URL/key or Databricks profile routing,
@@ -74,6 +76,14 @@ implements them separately, so a fix for one harness does not reach the others.
 **Web:** start a new session, choose the harness in the harness picker, open its
 configuration for model and effort, and send. Approval cards and the Terminal
 view appear in the session.
+
+**Agent instructions (Pi native):** launch an agent whose spec contains inline
+instructions or references a bundled instruction file. Reopen its terminal and
+check the same authored role is present once. For a custom Pi-native agent,
+`executor.context_files: false` excludes automatic workspace/global notes, and
+`executor.system_prompt_mode: replace` replaces Pi's base prompt. Explicit agent
+instructions remain; these options do not restrict file access or extensions.
+The `omnigent pi` wrapper also appends its own startup instructions.
 
 **Working status:** watch the session's Chat indicator after sending from the
 new-session composer, an existing-session composer, or the agent terminal.
@@ -277,6 +287,26 @@ Cross-harness journeys:
   before a terminal starts. The supported release must answer terminal and API
   input through the real Pi process; only model replies are scripted locally.
   Each case owns its stack and saves terminal recordings plus API evidence.
+- **`agent-instructions`, Pi native (own environment):**
+  `tests/e2e/test_pi_native_cold_resume_model_rewrite_e2e.py::test_cold_resume_preserves_model_and_prompt_settings`
+  uploads a spec with a bundled instruction file through a real server, host,
+  runner and Pi terminal. A test-owned extension reads the real system prompt
+  at launch/resume with defaults and combined replacement/no-context settings.
+  Authored instructions remain once; explicit additions survive, discovered
+  context follows the setting, and replacement excludes built-in/SYSTEM.md and
+  APPEND_SYSTEM.md prompts. The selected model survives. No model call is made.
+  Run with the CI-pinned Pi executable:
+
+  ```sh
+  OMNIGENT_PI_PATH=/path/to/pi uv run --no-sync pytest tests/e2e/test_pi_native_cold_resume_model_rewrite_e2e.py --reruns 0 -q
+  ```
+
+  Raw/resolved/absent specs and repeated user additions are covered by
+  `tests/runner/test_app_sessions_native_terminals_autocreate.py::test_auto_create_pi_terminal_launches_required_terminal`.
+  `tests/e2e/test_pi_native_fork_parallel_tool_results_e2e.py::test_pi_native_fork_rebuild_keeps_parallel_tool_results_adjacent`
+  checks authored instructions in actual scripted-provider requests before and
+  after a real Pi fork with tool history. These checks do not prove browser
+  launch, OS sandbox access or live-model adherence to the instructions.
 - **`side-chat`, Codex:**
   `tests/e2e_ui/chat/test_native_codex_side_chat.py::test_native_codex_side_chat_inherits_context_and_closes_independently`
   uses a real Codex CLI/app-server and the local mock model. It verifies inherited
@@ -308,11 +338,16 @@ Cross-harness journeys:
   see also [composer](./composer.md) for effort.
 - **`model-and-effort`, managed sandbox before a host exists:**
   `tests/e2e_ui/start_session/test_sandbox_gateway_models_without_binding.py::test_sandbox_codex_picker_offers_gateway_models_before_a_host_exists`,
-  `tests/e2e_ui/start_session/test_sandbox_model_selection.py::test_optional_gateway_preview_without_a_host`.
+  `tests/e2e_ui/start_session/test_sandbox_model_selection.py::test_optional_gateway_preview_without_a_host`,
+  `tests/e2e_ui/start_session/test_sandbox_model_selection.py::test_sandbox_harness_without_reachable_models_blocks_launch`.
   The picker offers the sandbox gateway's models for native and SDK agents with
   a Harness default row; efforts come from the listing's reasoning metadata, and
-  an unavailable listing keeps Harness default launchable. Connected-host
-  discovery and bound (`inference_models`) targets are unchanged.
+  an unavailable listing keeps Harness default launchable. An `unsupported`
+  listing (the provider is certain no model can serve the harness) grays out
+  the harness row and blocks launch; agent rows are never grayed out. The
+  connected-host picker catalog and bound (`inference_models`) targets are
+  unchanged. Databricks codex launch discovery skips models whose
+  `supported_api_types` list omits `codex/v1/responses`.
 - **`model-and-effort`, Codex runtime settings:**
   `tests/e2e/test_codex_native_supported_efforts_e2e.py::test_codex_clamps_unsupported_effort`,
   `tests/e2e/test_codex_native_supported_efforts_e2e.py::test_codex_preserves_supported_effort`,
