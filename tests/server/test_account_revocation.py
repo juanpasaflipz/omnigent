@@ -28,7 +28,7 @@ def create_session(client, *, guardrails=None):
 
 
 @pytest.fixture
-def setup_app(tmp_path, monkeypatch):
+def setup_app(tmp_path, monkeypatch, request):
     import omnigent.server.app as app_module
 
     # Tests add API routes after create_app; the SPA catch-all would hide them.
@@ -44,6 +44,18 @@ def setup_app(tmp_path, monkeypatch):
         kwargs["scheduled_task_store"] = SqlAlchemyScheduledTaskStore(
             str(kwargs["account_store"]._engine.url)
         )
+        if getattr(request, "param", False):
+            from unittest.mock import AsyncMock
+
+            from omnigent.server.feature_flags import resolve_feature_flags
+            from omnigent.server.scheduled.dispatch_scheduler import ScheduledTaskDispatchHooks
+
+            kwargs["feature_flags"] = resolve_feature_flags(
+                {"OMNIGENT_FEATURES": "automations_v2"}
+            )
+            kwargs["scheduled_task_dispatch"] = ScheduledTaskDispatchHooks(
+                AsyncMock(), AsyncMock(return_value=None)
+            )
         captured.update(kwargs)
         return original(**kwargs)
 
@@ -649,6 +661,46 @@ async def test_late_schedule_registration_stops_after_account_deletion(setup_app
     assert scheduler.job_count == 0
     assert timers.live() == []
     assert tasks.list_runs(task_id)[0] == []
+
+
+@pytest.mark.parametrize("setup_app", [True], indirect=True)
+def test_account_deletion_prevents_future_persistent_dispatch(setup_app):
+    from omnigent.server.scheduled.dispatch_scheduler import PersistentTaskScheduler
+    from tests.server.scheduled.test_scheduler import FakeClock
+
+    admin, alice, stores, _ = setup_app
+    scheduler = admin.app.state.scheduled_task_scheduler
+    assert isinstance(scheduler, PersistentTaskScheduler)
+    assert admin.portal is not None
+    # Control polling and time while keeping the real flag-enabled app and routes.
+    admin.portal.call(scheduler.stop)
+    agent_id = create_session(alice).json()["agent_id"]
+    created = alice.post(
+        "/v1/scheduled-tasks",
+        json={
+            "name": "revoked schedule",
+            "prompt": "hello",
+            "rrule": "FREQ=DAILY;BYHOUR=9",
+            "agent_id": agent_id,
+            "timezone": "UTC",
+        },
+    )
+    assert created.status_code == 200, created.text
+    tasks = stores["scheduled_task_store"]
+    task = tasks.get(created.json()["id"])
+    assert task.next_run_at is not None
+    clock = FakeClock(task.next_run_at + 1)
+    dispatch = stores["scheduled_task_dispatch"]
+    scheduler = PersistentTaskScheduler(
+        tasks, dispatch.on_fire, dispatch.on_expired, owns_host=dispatch.owns_host, now=clock.now
+    )
+    deleted = admin.delete("/auth/users/alice")
+    assert deleted.status_code == 204, deleted.text
+    assert tasks.list_due_tasks(int(clock.now())) == []
+    admin.portal.call(scheduler.poll_once)
+    admin.portal.call(scheduler.stop)
+    stores["scheduled_task_dispatch"].on_fire.assert_not_awaited()
+    assert tasks.list_runs(task.id)[0] == []
 
 
 def test_replica_cache_cannot_restore_account(setup_app):

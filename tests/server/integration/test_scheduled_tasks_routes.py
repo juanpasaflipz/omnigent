@@ -20,7 +20,12 @@ from omnigent.db.utils import builtin_agent_id
 from omnigent.native.native_coding_agents import CLAUDE_NATIVE_AGENT_NAME
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.server.app import create_app
+from omnigent.server.feature_flags import resolve_feature_flags
 from omnigent.server.routes import scheduled_tasks as scheduled_tasks_routes
+from omnigent.server.scheduled.dispatch_scheduler import (
+    PersistentTaskScheduler,
+    ScheduledTaskDispatchHooks,
+)
 from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
 from omnigent.stores.artifact_store.local import LocalArtifactStore
 from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
@@ -55,10 +60,13 @@ def _stub_host_workspace_validation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture()
-def auth_app(runtime_init: None, db_uri: str, tmp_path: Path) -> FastAPI:
+def auth_app(
+    runtime_init: None, db_uri: str, tmp_path: Path, request: pytest.FixtureRequest
+) -> FastAPI:
     from omnigent.server.auth import UnifiedAuthProvider
     from omnigent.stores.host_store import HostStore
 
+    persistent = getattr(request, "param", False)
     artifact_store = LocalArtifactStore(str(tmp_path / "artifacts"))
     app = create_app(
         agent_store=SqlAlchemyAgentStore(db_uri),
@@ -73,6 +81,14 @@ def auth_app(runtime_init: None, db_uri: str, tmp_path: Path) -> FastAPI:
         # ``app.state.host_store`` is None and the route skips the check.
         host_store=HostStore(db_uri),
         auth_provider=UnifiedAuthProvider(source="header"),
+        feature_flags=resolve_feature_flags(
+            {"OMNIGENT_FEATURES": "automations_v2" if persistent else "-automations_v2"}
+        ),
+        scheduled_task_dispatch=(
+            ScheduledTaskDispatchHooks(AsyncMock(), AsyncMock(return_value=None))
+            if persistent
+            else None
+        ),
     )
     _make_user(db_uri)
     _register_host(app, "4b653f6031f35d168cc0b37caa1306d1", "alice@example.com")
@@ -1914,3 +1930,51 @@ async def test_run_now_503_when_scheduler_not_running(
     auth_app.state.scheduled_task_run_now = None
     resp = await auth_client.post(f"/v1/scheduled-tasks/{created['id']}/run", headers=_headers())
     assert resp.status_code == 503, resp.text
+
+
+@pytest.mark.parametrize("auth_app", [True], indirect=True)
+async def test_database_scheduler_crud_uses_persisted_next_run(
+    auth_app: FastAPI, auth_client: httpx.AsyncClient, db_uri: str
+) -> None:
+    from datetime import datetime
+
+    # The opt-in scheduler has no per-task timers to update; each request persists
+    # its schedule and renders that same value without another scheduler lookup.
+    assert isinstance(auth_app.state.scheduled_task_scheduler, PersistentTaskScheduler)
+    assert auth_app.state.scheduled_task_scheduler.is_started
+    store = auth_app.state.scheduled_task_scheduler._store
+    created = await auth_client.post(
+        "/v1/scheduled-tasks", json=_create_body(), headers=_headers()
+    )
+    assert created.status_code == 200, created.text
+    task = created.json()
+    assert (
+        datetime.fromisoformat(task["next_run_at"]).timestamp()
+        == store.get(task["id"]).next_run_at
+    )
+    url = f"/v1/scheduled-tasks/{task['id']}"
+    fetched = await auth_client.get(url, headers=_headers())
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["next_run_at"] == task["next_run_at"]
+    listed = await auth_client.get("/v1/scheduled-tasks", headers=_headers())
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["scheduled_tasks"][0]["next_run_at"] == task["next_run_at"]
+    for edit in ({"rrule": "FREQ=DAILY;BYHOUR=17"}, {"timezone": "Asia/Tokyo"}):
+        changed = await auth_client.patch(url, json=edit, headers=_headers())
+        assert changed.status_code == 200, changed.text
+        assert all(changed.json()[key] == value for key, value in edit.items())
+        assert changed.json()["next_run_at"] != fetched.json()["next_run_at"]
+        assert (
+            datetime.fromisoformat(changed.json()["next_run_at"]).timestamp()
+            == store.get(task["id"]).next_run_at
+        )
+        fetched = changed
+    paused = await auth_client.patch(url, json={"state": "paused"}, headers=_headers())
+    assert paused.status_code == 200, paused.text
+    assert paused.json()["next_run_at"] is None
+    resumed = await auth_client.patch(url, json={"state": "active"}, headers=_headers())
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["next_run_at"] is not None
+    deleted = await auth_client.delete(url, headers=_headers())
+    assert deleted.status_code == 200, deleted.text
+    assert store.get(task["id"]) is None

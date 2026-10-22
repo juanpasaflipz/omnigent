@@ -8,8 +8,10 @@ supplied the scheduler is absent entirely.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
@@ -17,12 +19,19 @@ from fastapi import FastAPI
 from omnigent.db.db_models import workspace_scope
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.server.app import create_app
+from omnigent.server.scheduled.config import ScheduledTaskSchedulerConfig
+from omnigent.server.scheduled.dispatch_scheduler import (
+    PersistentTaskScheduler,
+    ScheduledTaskDispatchHooks,
+)
+from omnigent.server.scheduled.scheduler import ScheduledTaskScheduler
 from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
 from omnigent.stores.artifact_store.local import LocalArtifactStore
 from omnigent.stores.conversation_store.sqlalchemy_store import (
     SqlAlchemyConversationStore,
 )
 from omnigent.stores.file_store.sqlalchemy_store import SqlAlchemyFileStore
+from omnigent.stores.scheduled_task_store import ScheduledTaskStore
 from omnigent.stores.scheduled_task_store.sqlalchemy_store import (
     SqlAlchemyScheduledTaskStore,
 )
@@ -38,7 +47,10 @@ def _build_app(
     db_uri: str,
     tmp_path: Path,
     *,
-    scheduled_task_store: SqlAlchemyScheduledTaskStore | None,
+    scheduled_task_store: ScheduledTaskStore | None,
+    dispatch: ScheduledTaskDispatchHooks | None = None,
+    scheduler_config: ScheduledTaskSchedulerConfig | None = None,
+    server_config: dict | None = None,
 ) -> FastAPI:
     artifact_store = LocalArtifactStore(str(tmp_path / "artifacts"))
     return create_app(
@@ -51,6 +63,9 @@ def _build_app(
             cache_dir=tmp_path / "cache",
         ),
         scheduled_task_store=scheduled_task_store,
+        scheduled_task_dispatch=dispatch,
+        scheduled_task_scheduler_config=scheduler_config,
+        server_config=server_config,
     )
 
 
@@ -126,10 +141,13 @@ async def test_lifespan_survives_scheduler_start_failure(
 
     # Entering the lifespan must not raise despite start() blowing up.
     async with app.router.lifespan_context(app):
-        scheduler = app.state.scheduled_task_scheduler
-        assert scheduler is not None
-        assert not scheduler.is_started
-        assert scheduler.job_count == 0
+        assert app.state.scheduled_task_scheduler is None
+        retry = next(
+            task
+            for task in asyncio.all_tasks()
+            if task.get_name() == "scheduled-task-startup-retry"
+        )
+    assert retry.done()
 
 
 async def test_lifespan_without_store_has_no_scheduler(
@@ -163,3 +181,252 @@ async def test_lifespan_skips_paused_task(
     app = _build_app(db_uri, tmp_path, scheduled_task_store=store)
     async with app.router.lifespan_context(app):
         assert app.state.scheduled_task_scheduler.job_count == 0
+
+
+@pytest.mark.parametrize("config_source", ["defaults", "empty_yaml", "yaml", "injected"])
+async def test_lifespan_database_switch_dispatches_claim_and_drains(
+    runtime_init: None,
+    db_uri: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_source: str,
+) -> None:
+    # Create a task whose persisted occurrence is already due at server startup.
+    import time
+
+    from omnigent.entities import ScheduledTask
+    from omnigent.server.scheduled.dispatch_scheduler import StartupLease
+    from omnigent.stores.scheduled_task_store import sqlalchemy_store
+
+    monkeypatch.setenv("OMNIGENT_FEATURES", "automations_v2")
+    monkeypatch.setattr(sqlalchemy_store, "now_epoch", lambda: int(time.time()) - 3600)
+    store = SqlAlchemyScheduledTaskStore(db_uri)
+    store.configure_dispatch(True)
+    task = store.create(
+        _uid("dispatch"), "dispatch", "prompt", "FREQ=HOURLY", None, _uid("agent"), "UTC"
+    )
+    store.configure_dispatch(False)
+    settings = ScheduledTaskSchedulerConfig()
+    injected_config = None
+    if config_source == "empty_yaml":
+        config_path = tmp_path / "server.yaml"
+        config_path.write_text("scheduled_task_scheduler:\n")
+        monkeypatch.setenv("OMNIGENT_CONFIG", str(config_path))
+    elif config_source != "defaults":
+        config_path = tmp_path / "server.yaml"
+        config_path.write_text(
+            "scheduled_task_scheduler:\n"
+            "  poll_seconds: 5\n"
+            "  renewal_seconds: 10\n"
+            "  lease_seconds: 240\n"
+            "  batch_size: 7\n"
+            "  max_startups: 3\n"
+            "  recovery_seconds: 15\n"
+        )
+        monkeypatch.setenv("OMNIGENT_CONFIG", str(config_path))
+        settings = ScheduledTaskSchedulerConfig(
+            poll_seconds=5,
+            renewal_seconds=10,
+            lease_seconds=240,
+            batch_size=7,
+            max_startups=3,
+            recovery_seconds=15,
+        )
+        if config_source == "injected":
+            # Explicit deployment settings take precedence over the YAML section.
+            config_path.write_text("scheduled_task_scheduler: invalid\n")
+            injected_config = settings
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def fire(snapshot: ScheduledTask, lease: StartupLease) -> None:
+        assert snapshot.id == uuid.UUID(task.id).hex
+        assert lease.run.status == "starting"
+        assert lease.run.lease_expires_at == pytest.approx(
+            time.time() + settings.lease_seconds, abs=10
+        )
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    app = _build_app(
+        db_uri,
+        tmp_path,
+        scheduled_task_store=store,
+        dispatch=ScheduledTaskDispatchHooks(fire, AsyncMock(return_value=None)),
+        scheduler_config=injected_config,
+    )
+    async with app.router.lifespan_context(app):
+        scheduler = app.state.scheduled_task_scheduler
+        assert isinstance(scheduler, PersistentTaskScheduler)
+        for name, value in settings.model_dump().items():
+            assert getattr(scheduler, f"_{name}") == value
+        new_task = store.create(
+            _uid("new-dispatch"), "new", "prompt", "FREQ=DAILY", None, _uid("agent"), "UTC"
+        )
+        assert new_task.next_run_at is not None
+        await asyncio.wait_for(started.wait(), 10)
+        assert len(store.list_runs(task.id)[0]) == 1
+    assert stopped.is_set()
+    assert not scheduler.is_started
+    assert store.list_runs(task.id)[0][0].status == "starting"
+
+
+@pytest.mark.parametrize("features", [None, "-automations_v2", "automations_v2,-automations_v2"])
+async def test_automations_v2_flag_off_keeps_timers_even_with_hooks(
+    runtime_init: None,
+    db_uri: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    features: str | None,
+) -> None:
+    if features is None:
+        monkeypatch.delenv("OMNIGENT_FEATURES", raising=False)
+    else:
+        monkeypatch.setenv("OMNIGENT_FEATURES", features)
+    fire, recover = AsyncMock(), AsyncMock()
+    store = SqlAlchemyScheduledTaskStore(db_uri)
+    store.configure_dispatch(True)
+    tasks = []
+    for workspace in (0, 42):
+        with workspace_scope(workspace):
+            tasks.append(
+                store.create(
+                    _uid("before-rollback"),
+                    "rollback",
+                    "prompt",
+                    "FREQ=DAILY",
+                    None,
+                    _uid("agent"),
+                    "UTC",
+                )
+            )
+    assert all(task.next_run_at is not None for task in tasks)
+    app = _build_app(
+        db_uri,
+        tmp_path,
+        scheduled_task_store=store,
+        dispatch=ScheduledTaskDispatchHooks(fire, recover),
+        server_config={"scheduled_task_scheduler": {"lease_seconds": -1}},
+    )
+    async with app.router.lifespan_context(app):
+        assert isinstance(app.state.scheduled_task_scheduler, ScheduledTaskScheduler)
+        for task in tasks:
+            with workspace_scope(task.workspace_id):
+                assert store.get(task.id).next_run_at is None
+        assert (
+            store.create(
+                _uid("after-rollback"),
+                "legacy",
+                "prompt",
+                "FREQ=DAILY",
+                None,
+                _uid("agent"),
+                "UTC",
+            ).next_run_at
+            is None
+        )
+        fire.assert_not_awaited()
+        recover.assert_not_awaited()
+
+
+@pytest.mark.parametrize("has_store,has_hooks", [(True, False), (False, True), (False, False)])
+async def test_automations_v2_flag_requires_dispatch_dependencies(
+    runtime_init: None,
+    db_uri: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    has_store: bool,
+    has_hooks: bool,
+) -> None:
+    monkeypatch.setenv("OMNIGENT_FEATURES", "automations_v2")
+    with pytest.raises(ValueError, match="automations_v2 requires"):
+        _build_app(
+            db_uri,
+            tmp_path,
+            scheduled_task_store=SqlAlchemyScheduledTaskStore(db_uri) if has_store else None,
+            dispatch=ScheduledTaskDispatchHooks(AsyncMock(), AsyncMock()) if has_hooks else None,
+        )
+
+
+async def test_automations_v2_rejects_store_without_dispatch_operations(
+    runtime_init: None, db_uri: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OMNIGENT_FEATURES", "automations_v2")
+    with pytest.raises(TypeError, match="does not implement the operations"):
+        _build_app(
+            db_uri,
+            tmp_path,
+            scheduled_task_store=Mock(spec=ScheduledTaskStore),
+            dispatch=ScheduledTaskDispatchHooks(AsyncMock(), AsyncMock()),
+        )
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ({"lease_seconds": 30}, "renewal_seconds must be shorter"),
+        (False, "valid dictionary"),
+        (0, "valid dictionary"),
+        ("", "valid dictionary"),
+        ([], "valid dictionary"),
+    ],
+)
+async def test_automations_v2_rejects_invalid_scheduler_config_at_app_creation(
+    runtime_init: None,
+    db_uri: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings,
+    message: str,
+) -> None:
+    monkeypatch.setenv("OMNIGENT_FEATURES", "automations_v2")
+    with pytest.raises(ValueError, match=message):
+        _build_app(
+            db_uri,
+            tmp_path,
+            scheduled_task_store=SqlAlchemyScheduledTaskStore(db_uri),
+            dispatch=ScheduledTaskDispatchHooks(AsyncMock(), AsyncMock()),
+            server_config={"scheduled_task_scheduler": settings},
+        )
+
+
+@pytest.mark.parametrize("failure", ["reset_dispatch_cursors", "list_active_all_workspaces"])
+async def test_legacy_startup_retries_without_skipping_cursor_reset(
+    runtime_init, db_uri, tmp_path, monkeypatch, failure
+):
+    import omnigent.server.app as app_module
+    from tests._helpers.polling import poll_until_async
+
+    monkeypatch.setenv("OMNIGENT_FEATURES", "-automations_v2")
+    monkeypatch.setattr(app_module, "_SCHEDULED_TASK_START_RETRY_SECONDS", 0.01)
+    store = SqlAlchemyScheduledTaskStore(db_uri)
+    store.configure_dispatch(True)
+    task = store.create(
+        _uid("retry-start"), "retry", "prompt", "FREQ=DAILY", None, _uid("agent"), "UTC"
+    )
+    original = getattr(store, failure)
+    attempts = 0
+
+    def unavailable_once():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary database outage")
+        return original()
+
+    monkeypatch.setattr(store, failure, unavailable_once)
+    app = _build_app(db_uri, tmp_path, scheduled_task_store=store)
+    async with app.router.lifespan_context(app):
+        assert app.state.scheduled_task_scheduler is None
+        await poll_until_async(
+            lambda: app.state.scheduled_task_scheduler is not None, timeout_s=10
+        )
+        scheduler = app.state.scheduled_task_scheduler
+        assert scheduler.is_started
+        assert scheduler.job_count == 1
+        assert store.get(task.id).next_run_at is None
+        assert attempts == 2
+    assert not scheduler.is_started

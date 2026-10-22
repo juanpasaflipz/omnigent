@@ -4,6 +4,9 @@
 occurrence once across server replicas. It also checks interrupted startups so a
 server crash does not leave a run in `starting` forever.
 
+The `automations_v2` flag selects this scheduler. It defaults to off, which keeps
+the existing in-memory timers.
+
 ## Starting a run
 
 Each poll fills in missing `next_run_at` values, then finds active tasks that are
@@ -90,8 +93,8 @@ remain in the database for a later recovery sweep.
 
 ## Execution and recovery callbacks
 
-The caller supplies execution, recovery, and host-ownership callbacks when
-constructing `PersistentTaskScheduler`:
+The application supplies these through `ScheduledTaskDispatchHooks`, passed to
+`create_app(scheduled_task_dispatch=...)`:
 
 | Callback | Responsibility |
 | --- | --- |
@@ -130,20 +133,50 @@ request that was already accepted.
 
 ## Timing and capacity
 
-Pass these settings to `PersistentTaskScheduler`. `ScheduledTaskSchedulerConfig`
-validates them together; renewal must happen more frequently than lease expiry.
+These are the defaults in the server YAML configuration:
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `poll_seconds` | 30 | Time between polls for due tasks and expired startups. |
-| `renewal_seconds` | 30 | Time between startup heartbeats. |
-| `lease_seconds` | 120 | Lease duration after a successful renewal. |
-| `recovery_seconds` | 30 | Timeout for inspecting and recovering one run. |
-| `batch_size` | 100 | Maximum rows per database page. |
-| `max_startups` | 100 | Concurrent startups per server, not active agent turns. |
+```yaml
+scheduled_task_scheduler:
+  poll_seconds: 30       # Time between checks for due tasks and expired startups
+  renewal_seconds: 30    # Time between startup heartbeats
+  lease_seconds: 120     # Lease duration after a successful renewal
+  recovery_seconds: 30   # Timeout for inspecting and recovering one run
+  batch_size: 100        # Maximum rows per database page
+  max_startups: 100      # Concurrent startups per server, not active agent turns
+```
 
-Values must be positive and finite; lease seconds and capacities must be whole
-numbers. Settings are fixed for the scheduler's lifetime.
+Omit the section or individual settings to use defaults; an empty section also
+uses defaults. `OMNIGENT_CONFIG` selects the server YAML file. Application wrappers
+can instead pass `server_config`, or
+supply `scheduled_task_scheduler_config=ScheduledTaskSchedulerConfig(...)` to
+replace the YAML scheduler settings.
+
+Settings take effect at startup. Values must be positive and finite; lease seconds
+and capacities must be whole numbers. Renewal must be more frequent than expiry.
+Invalid settings fail startup when the flag is on; the section is ignored when
+it is off.
+
+## Switching schedulers
+
+Set `OMNIGENT_FEATURES=automations_v2` and restart all scheduler replicas together.
+The application requires a compatible store and execution/recovery callbacks.
+The legacy Run now path still uses a local overlap guard, so it must join the
+claimed-run path before rollout. The executor integration must also handle a
+session that finishes while its run still says `starting`; the current recovery
+callback can only return `running`, `failed`, or an uncertain outcome.
+
+To switch back, stop new startups and let existing ones finish or recover. Then
+set `OMNIGENT_FEATURES=-automations_v2` and restart all replicas. Legacy startup
+clears saved `next_run_at` values before creating future timers. Task definitions,
+run history, and running agent sessions are retained. Clearing the saved times
+prevents a later re-enable from replaying occurrences handled by the old timers.
+If clearing or startup fails, it retries every 30 seconds; task routes see the
+scheduler as unavailable until startup succeeds.
+
+All replicas sharing a database must use the same mode, because legacy timers do
+not claim occurrences. Changing the environment of a running server does not
+switch its scheduler. The flag is exposed through `/v1/info`; per-workspace access
+controls are separate.
 
 The store supports PostgreSQL, MySQL, CockroachDB, and SQLite. Cloudflare D1 cannot
 provide the transaction needed to create a run and advance its schedule together.

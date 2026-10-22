@@ -46,6 +46,7 @@ from omnigent.server.passwords import (
     needs_rehash,
     verify_password,
 )
+from omnigent.server.scheduled.dispatch_scheduler import PersistentTaskScheduler
 from omnigent.stores.permission_store import PermissionStore
 
 if TYPE_CHECKING:
@@ -788,7 +789,7 @@ def create_accounts_auth_router(
         # The store already disabled the rows; drop the in-memory timers so
         # the scheduler stops re-arming them.
         scheduler = getattr(request.app.state, "scheduled_task_scheduler", None)
-        if scheduler is not None:
+        if scheduler is not None and not isinstance(scheduler, PersistentTaskScheduler):
             for task_id in owned_task_ids:
                 scheduler.remove(task_id)
         auth_provider.revoke_user_sessions(user_id)

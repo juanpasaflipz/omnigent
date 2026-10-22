@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -36,6 +37,7 @@ from omnigent.server.routes._session_create_validation import (
     validate_session_model_metadata,
     validate_session_permission_mode,
 )
+from omnigent.server.scheduled.dispatch_scheduler import PersistentTaskScheduler
 from omnigent.server.scheduled.rrule import RRuleSearchError, RRuleValidationError, validate_rrule
 from omnigent.server.scheduled.run_reconciler import force_fail_stale_runs
 from omnigent.stores import AgentStore, ConversationStore, PermissionStore
@@ -135,6 +137,16 @@ class UpdateScheduledTaskRequest(BaseModel):
         if "agent_id" in self.model_fields_set and self.agent_id is None:
             raise ValueError("agent_id cannot be null")
         return self
+
+
+def _next_run_at(task: ScheduledTask, scheduler: Any) -> str | None:
+    if isinstance(scheduler, PersistentTaskScheduler):
+        return (
+            datetime.fromtimestamp(task.next_run_at, UTC).isoformat()
+            if task.next_run_at is not None
+            else None
+        )
+    return scheduler.next_run_at(task.id) if scheduler is not None else None
 
 
 def _to_response(
@@ -418,13 +430,13 @@ def create_scheduled_tasks_router(
                 ) from exc
             raise
         scheduler = _scheduler(request)
-        if scheduler is not None:
+        if scheduler is not None and not isinstance(scheduler, PersistentTaskScheduler):
             scheduler.add(task)
         # A freshly created task has no runs (last_run_status is None); its
         # next_run_at is available now that the scheduler armed it above.
         return _to_response(
             task,
-            next_run_at=scheduler.next_run_at(task.id) if scheduler is not None else None,
+            next_run_at=_next_run_at(task, scheduler),
         )
 
     @router.get("/scheduled-tasks")
@@ -455,7 +467,7 @@ def create_scheduled_tasks_router(
                 _to_response(
                     t,
                     last_run_status=latest_status.get(t.id),
-                    next_run_at=scheduler.next_run_at(t.id) if scheduler is not None else None,
+                    next_run_at=_next_run_at(t, scheduler),
                 )
                 for t in tasks
             ]
@@ -477,7 +489,7 @@ def create_scheduled_tasks_router(
         return _to_response(
             task,
             last_run_status=latest_status.get(task.id),
-            next_run_at=scheduler.next_run_at(task.id) if scheduler is not None else None,
+            next_run_at=_next_run_at(task, scheduler),
         )
 
     @router.get("/scheduled-tasks/{scheduled_task_id}/runs")
@@ -528,8 +540,8 @@ def create_scheduled_tasks_router(
         A manual override that reuses the SHARED scheduled-fire path (the same
         ``on_fire`` machinery — session create, owner grant, runner launch,
         prompt dispatch, run recording) via ``app.state.scheduled_task_run_now``.
-        It does NOT re-implement the fire logic and cannot collide with a
-        scheduled fire of the same task (both share the in-flight overlap guard).
+        Legacy scheduled fires share its process-local overlap guard. Persistent
+        scheduled fires use database claims, which this manual path does not join.
 
         Paused tasks ARE runnable here — run-now is an explicit manual override,
         so it does not require the ``active`` state the scheduler enforces.
@@ -676,13 +688,13 @@ def create_scheduled_tasks_router(
                 ) from exc
             raise
         scheduler = _scheduler(request)
-        if scheduler is not None:
+        if scheduler is not None and not isinstance(scheduler, PersistentTaskScheduler):
             scheduler.update(updated)
         latest_status = store.list_latest_run_status_for_tasks([updated.id])
         return _to_response(
             updated,
             last_run_status=latest_status.get(updated.id),
-            next_run_at=scheduler.next_run_at(updated.id) if scheduler is not None else None,
+            next_run_at=_next_run_at(updated, scheduler),
         )
 
     @router.delete("/scheduled-tasks/{scheduled_task_id}")
@@ -699,7 +711,7 @@ def create_scheduled_tasks_router(
         _require_owned(scheduled_task_id, owner_id)
         await asyncio.to_thread(store.delete, scheduled_task_id)
         scheduler = _scheduler(request)
-        if scheduler is not None:
+        if scheduler is not None and not isinstance(scheduler, PersistentTaskScheduler):
             scheduler.remove(scheduled_task_id)
         return {"deleted": True, "id": scheduled_task_id}
 
