@@ -648,7 +648,7 @@ class TurnContext:
         result: ElicitationResult | None = None
         try:
             result = await future
-            return result  # noqa: RET504 — finally emits the recorded verdict.
+            return result
         finally:
             self._pending_elicitations.pop(elicitation_id, None)
             self._pending_human_waits -= 1

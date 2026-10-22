@@ -20,6 +20,7 @@ import time
 import unicodedata
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from http.client import BadStatusLine, RemoteDisconnected
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import pairwise
@@ -13401,7 +13402,8 @@ async def test_pi_dialog_disconnect_cancels_upstream_wait(
         await asyncio.wait_for(cancelled.wait(), timeout=2)
     finally:
         writer.close()
-        await writer.wait_closed()
+        with suppress(ConnectionResetError):
+            await writer.wait_closed()
         relay.close()
 
 
