@@ -65,6 +65,11 @@ from omnigent.tools.builtins.spawn import (
     SysSessionSendTool,
     SysSessionShareTool,
 )
+from omnigent.tools.builtins.subscriptions import (
+    SysSubscribeTool,
+    SysSubscriptionListTool,
+    SysUnsubscribeTool,
+)
 from omnigent.tools.builtins.timer import (
     SysTimerCancelTool,
     SysTimerSetTool,
@@ -101,8 +106,11 @@ __all__ = [
     "SysSessionRenameTool",
     "SysSessionSendTool",
     "SysSessionShareTool",
+    "SysSubscribeTool",
+    "SysSubscriptionListTool",
     "SysTimerCancelTool",
     "SysTimerSetTool",
+    "SysUnsubscribeTool",
     "UpdateCommentTool",
     "WebReadTool",
     "WebSearchTool",

@@ -3480,6 +3480,36 @@ def test_parse_timers_true_sets_flag(tmp_path: Path) -> None:
     assert spec.timers is True
 
 
+# ─── Top-level ``subscriptions:`` flag (event wakes) ─
+
+
+def test_parse_subscriptions_defaults_to_false_when_omitted(agent_dir: Path) -> None:
+    """
+    Without a top-level ``subscriptions:`` key the parsed
+    ``AgentSpec.subscriptions`` is ``False``, so no existing agent gains
+    the ``sys_subscribe`` builtins by accident.
+
+    :param agent_dir: Temporary agent directory fixture.
+    """
+    spec = parse(agent_dir)
+    assert spec.subscriptions is False
+
+
+def test_parse_subscriptions_true_sets_flag(tmp_path: Path) -> None:
+    """
+    ``subscriptions: true`` in config.yaml round-trips to
+    ``AgentSpec.subscriptions == True`` — the gate for
+    ``ToolManager._register_subscription_tools`` and the event wake
+    notice instruction.
+
+    :param tmp_path: pytest-provided temporary directory.
+    """
+    config = {"spec_version": 1, "name": "event-agent", "subscriptions": True}
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+    spec = parse(tmp_path)
+    assert spec.subscriptions is True
+
+
 # ─── Top-level ``tool_groups:`` block (framework tool opt-out) ─
 
 

@@ -1170,6 +1170,10 @@ def agent_def_to_agent_spec(
         model_egress=agent_def.model_egress,
         terminals=terminals,
         timers=agent_def.timers,
+        # The legacy inner datamodel has no subscriptions field; the
+        # top-level YAML key is read directly so a legacy-format agent
+        # can still opt into event wakes.
+        subscriptions=bool((raw_yaml or {}).get("subscriptions", False)),
         spawn=agent_def.spawn,
         tool_groups=tool_groups,
         # AgentDef.agent_session_sharing is the raw YAML string

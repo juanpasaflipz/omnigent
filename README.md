@@ -60,6 +60,33 @@ Omnigent lets you:
 
 ---
 
+## The flywheel primitives (this fork)
+
+This fork adds three primitives motivated by the observation that a harness no
+longer adds coding intelligence, so it has to earn its keep elsewhere: waking
+agents on events, deleting its own scaffolding, and measuring cost. The design
+is in [`designs/HARNESS_FLYWHEEL.md`](designs/HARNESS_FLYWHEEL.md).
+
+- **🔔 Subscriptions.** One tool, `sys_subscribe`, wakes an agent when CI goes
+  red on its PR, an issue opens, or any webhook fires. `POST /v1/events/github`
+  verifies GitHub webhooks; `POST /v1/events/webhook` takes anything else.
+  Behind the `subscriptions` feature flag. See [`docs/SUBSCRIPTIONS.md`](docs/SUBSCRIPTIONS.md).
+- **🧹 Shim registry.** Every deterministic patch over a model gap is
+  registered with a reason and a review-by release, logged on each firing,
+  and listed at `GET /v1/shims` with a `retirable` flag. The
+  [`shim-janitor`](examples/shim-janitor) agent opens PRs to delete shims
+  that stopped firing. See [`docs/SHIMS.md`](docs/SHIMS.md).
+- **📉 Efficiency scorecard.** `omnigent usage --efficiency` and
+  `GET /v1/usage/efficiency` report cache hit rate, output share, cost per
+  session, and model mix per harness and per model, worst sessions first.
+- **🏭 Software factory.** [`examples/factory`](examples/factory) is a
+  foreman that subscribes to repository events, triages on a small model,
+  dispatches a sandboxed fixer that must prove its work with tests and a
+  recording, asks a human before merging, and hands the merge to a deploy
+  watcher. No polling anywhere.
+
+---
+
 ## Quick start
 
 ### 1. Install

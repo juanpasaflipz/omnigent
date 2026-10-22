@@ -32,6 +32,7 @@ class Feature(StrEnum):
     GRID_SESSIONS_DISPLAY_UI = "grid_sessions_display_ui"
     AUTOMATIONS_V2 = "automations_v2"
     SPLITTABLE_TERMINAL_VIEW_UI = "splittable_terminal_view_ui"
+    SUBSCRIPTIONS = "subscriptions"
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,16 @@ FEATURE_DEFINITIONS: tuple[FeatureDefinition, ...] = (
         description="Search workspace file contents through the session runner",
         owner="web",
         review_by_release="0.20.0",
+    ),
+    FeatureDefinition(
+        feature=Feature.SUBSCRIPTIONS,
+        description=(
+            "Event subscriptions: /v1/events ingest and /v1/subscriptions routes that wake "
+            "sessions on GitHub and generic webhook events"
+        ),
+        owner="server",
+        review_by_release="0.24.0",
+        frontend_visible=False,
     ),
 )
 

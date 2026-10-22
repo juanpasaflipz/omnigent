@@ -65,6 +65,7 @@ from omnigent.models.model_override import (
 )
 from omnigent.native.native_coding_agents import public_agent_name
 from omnigent.runtime.mcp_tool_result import encode_mcp_image_result, native_image_payload
+from omnigent.runtime.shims import register_shim, shim_fired
 from omnigent.tools import ToolManager
 from omnigent.tools.base import Tool, ToolContext
 from omnigent.tools.builtins._arguments import parse_json_object_arguments
@@ -435,6 +436,18 @@ _SCHEDULED_TASK_TOOLS = frozenset(
     }
 )
 
+# Priority 5l.2: Event subscriptions — the runner proxies the Omnigent
+# server's /v1/subscriptions REST endpoints (same posture as
+# _SCHEDULED_TASK_TOOLS). Registered only when the spec sets
+# ``subscriptions: true``.
+_SUBSCRIPTION_TOOLS = frozenset(
+    {
+        "sys_subscribe",
+        "sys_unsubscribe",
+        "sys_subscription_list",
+    }
+)
+
 # Priority 5m: Embedded-browser tools.
 # Runner dispatch POSTs a blocking action request to the server, which parks a
 # Future + publishes ``browser.action_request`` on the session stream; the
@@ -486,6 +499,7 @@ _NATIVE_RELAY_BUILTIN_TOOLS = (
     | _AGENT_TOOLS
     | _POLICY_TOOLS
     | _SCHEDULED_TASK_TOOLS
+    | _SUBSCRIPTION_TOOLS
     | _TERMINAL_TOOLS
     # ``browser_*`` must ride the native relay: the Omnigent desktop app
     # runs native (claude/codex/pi) sessions, which ignore ``request.tools``
@@ -887,6 +901,7 @@ _ALL_LOCAL_TOOLS = (
     | _AGENT_TOOLS
     | _POLICY_TOOLS
     | _SCHEDULED_TASK_TOOLS
+    | _SUBSCRIPTION_TOOLS
 )
 _PLACEHOLDER_CWDS = (None, "", ".", "./")
 
@@ -4731,6 +4746,84 @@ async def _execute_scheduled_task_tool(
     return json.dumps(resp.json())
 
 
+# Fields the subscribe tool forwards to POST /v1/subscriptions. The runner
+# adds ``conversation_id`` itself so the model never names a session.
+_SUBSCRIPTION_CREATE_FIELDS = ("source", "kind", "match", "note")
+_SUBSCRIPTION_ID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
+
+
+def _subscription_url(subscription_id: object) -> str | None:
+    """Return a safe subscription URL path for a canonical id."""
+    if not isinstance(subscription_id, str) or not _SUBSCRIPTION_ID_RE.fullmatch(subscription_id):
+        return None
+    return f"/v1/subscriptions/{subscription_id.lower()}"
+
+
+async def _execute_subscription_tool(
+    tool_name: str,
+    arguments: str,
+    *,
+    server_client: httpx.AsyncClient | None,
+    conversation_id: str | None,
+) -> str:
+    """
+    Runner-local handler for the ``sys_subscribe`` family.
+
+    The runner has no in-process SubscriptionStore, so these tools proxy the
+    Omnigent server's ``/v1/subscriptions`` REST endpoints over
+    ``server_client`` — same posture as :func:`_execute_scheduled_task_tool`.
+    ``sys_subscribe`` always targets the calling session: the runner fills in
+    ``conversation_id`` from the dispatch context. No approval gate applies,
+    unlike ``sys_scheduled_task_create``, because a subscription can only wake
+    the caller's own session rather than launch unattended work elsewhere.
+    Ownership, conversation access and filter validation are enforced
+    server-side.
+
+    :param tool_name: One of the ``sys_subscri*`` names.
+    :param arguments: JSON-encoded arguments string from the LLM.
+    :param server_client: HTTP client pointed at the Omnigent server; ``None``
+        returns an error string.
+    :param conversation_id: The calling session, required for ``sys_subscribe``.
+    :returns: Tool output JSON string.
+    """
+    if server_client is None:
+        return json.dumps({"error": f"{tool_name} requires server access"})
+    try:
+        args: _JsonObject = json.loads(arguments) if arguments.strip() else {}
+    except json.JSONDecodeError:
+        return json.dumps({"error": f"{tool_name}: malformed JSON arguments"})
+
+    try:
+        if tool_name == "sys_subscription_list":
+            resp = await server_client.get("/v1/subscriptions", timeout=30.0)
+        elif tool_name == "sys_subscribe":
+            if not conversation_id:
+                return json.dumps({"error": f"{tool_name} requires a session context"})
+            payload = {k: args[k] for k in _SUBSCRIPTION_CREATE_FIELDS if k in args}
+            payload["conversation_id"] = conversation_id
+            resp = await server_client.post("/v1/subscriptions", json=payload, timeout=30.0)
+        elif tool_name == "sys_unsubscribe":
+            subscription_id = args.get("subscription_id")
+            if not subscription_id:
+                return json.dumps({"error": f"{tool_name} requires 'subscription_id'"})
+            subscription_url = _subscription_url(subscription_id)
+            if subscription_url is None:
+                return json.dumps(
+                    {"error": f"{tool_name} requires canonical 32-character hex subscription_id"}
+                )
+            resp = await server_client.delete(subscription_url, timeout=30.0)
+        else:  # pragma: no cover — routing guarantees a known name
+            return json.dumps({"error": f"unknown subscription tool {tool_name!r}"})
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"{tool_name} failed: {exc}"})
+
+    if resp.status_code >= 400:
+        return json.dumps(
+            {"error": f"server returned {resp.status_code}", "details": resp.text[:500]}
+        )
+    return json.dumps(resp.json())
+
+
 @dataclass
 class _ParsedTitle:
     """
@@ -6811,6 +6904,13 @@ async def execute_tool(
                 arguments,
                 server_client=server_client,
             )
+        elif tool_name in _SUBSCRIPTION_TOOLS:
+            output = await _execute_subscription_tool(
+                tool_name,
+                arguments,
+                server_client=server_client,
+                conversation_id=conversation_id,
+            )
         elif tool_name in _BROWSER_TOOLS:
             output = await _execute_browser_tool(
                 tool_name,
@@ -7959,6 +8059,16 @@ def _truncate_inbox_output(output: object, *, source_session_id: str | None = No
     )
 
 
+EMPTY_COMPLETION_PHRASING_SHIM = register_shim(
+    "inbox.empty_completion_phrasing",
+    reason="A dangling '…returned: ' reads to the parent as a truncated hand-off.",
+    model_gap="Parent model treats an empty completion line as garbled output and retries.",
+    added_in="0.19.0",
+    review_by="0.24.0",
+    owner="runner",
+)
+
+
 def _format_async_task_item(payload: _JsonObject) -> str:
     """
     Render a completed/failed/cancelled async-task inbox payload.
@@ -7985,6 +8095,7 @@ def _format_async_task_item(payload: _JsonObject) -> str:
         target = f"{agent}:{title}" if title else str(agent)
         if status == "completed":
             if not has_output:
+                shim_fired(EMPTY_COMPLETION_PHRASING_SHIM)
                 return (
                     f"[System: sub-agent task {handle_id} completed — {target} produced no output]"
                 )
@@ -8004,6 +8115,7 @@ def _format_async_task_item(payload: _JsonObject) -> str:
         return f"[System: sub-agent task {handle_id} {status} — {target}: {output}]"
     if status == "completed":
         if not has_output:
+            shim_fired(EMPTY_COMPLETION_PHRASING_SHIM)
             return f"[System: task {handle_id} completed — {tool} produced no output]"
         return f"[System: task {handle_id} completed — {tool} returned: {output}]"
     if status == "failed":

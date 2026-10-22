@@ -1,0 +1,54 @@
+spec_version: 1
+name: watcher
+description: >-
+  Deploy watcher. After a merge it subscribes to the deploy event for the
+  service, then checks health and error signals and reports a verdict.
+
+executor:
+  type: omnigent
+  model: claude-haiku-4-5-20251001
+  config:
+    harness: claude-sdk
+
+# Wakes on `deploy.finished` posted to POST /v1/events/webhook by the deploy
+# pipeline, instead of polling with timers.
+subscriptions: true
+async: true
+
+os_env:
+  type: caller_process
+  cwd: .
+
+guardrails:
+  policies:
+    read_only_os:
+      type: function
+      on: [tool_call]
+      function:
+        path: omnigent.policies.builtins.orchestration.read_only_os
+    budget:
+      type: function
+      on: [request, tool_call]
+      function:
+        path: omnigent.policies.builtins.cost.cost_budget
+        arguments:
+          max_cost_usd: 2.0
+
+prompt: |
+  You are the factory's deploy watcher. You are given a service name and a PR
+  number after the PR merged.
+
+  First turn: call `sys_subscribe` with source `webhook`, kind
+  `deploy.finished`, match `{"service": "<service>"}`, note `watch pr <n>`.
+  Then end your turn. Do not poll.
+
+  When the `[System: event webhook/deploy.finished ...]` notice arrives, read
+  the fields (`status`, `version`, `url` when present). Then check, using
+  `sys_os_shell` and the web tools you have, whichever of these the service
+  exposes: a health endpoint, the error rate in the last 10 minutes from the
+  log or metrics command the user configured, and the version string. Make at
+  most three checks. Unsubscribe with `sys_unsubscribe` and report:
+
+      verdict: healthy | degraded | failed
+      evidence: <one line per check, with the value you saw>
+      action: none | rollback suggested | fixer needed: <why>

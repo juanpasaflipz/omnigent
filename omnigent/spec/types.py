@@ -1568,6 +1568,13 @@ class AgentSpec:  # type: ignore[explicit-any]  # params: dict[str, Any] field (
         with a workflow per timer pinned to the timer_id). See
         ``designs/SERVER_HARNESS_CONTRACT.md`` §Timers and
         step 10.
+    :param subscriptions: Whether the LLM-callable event-subscription
+        builtins (``sys_subscribe``, ``sys_unsubscribe``,
+        ``sys_subscription_list``) are registered. YAML key is
+        ``subscriptions:``. **Defaults to ``False``** — agents opt into
+        waking on external events (GitHub webhooks, generic
+        ``/v1/events/webhook`` posts) explicitly, exactly like
+        ``timers:``. See ``designs/HARNESS_FLYWHEEL.md`` §2.
     :param spawn: Whether the agent may spawn child sessions
         OUTSIDE any declared sub-agent list: registers
         ``sys_session_create`` (launch an existing agent by id or
@@ -1649,6 +1656,7 @@ class AgentSpec:  # type: ignore[explicit-any]  # params: dict[str, Any] field (
     model_egress: list[str] | None = None
     terminals: dict[str, TerminalEnvSpec] | None = None
     timers: bool = False
+    subscriptions: bool = False
     spawn: bool = False
     tool_groups: ToolGroupsConfig = field(default_factory=ToolGroupsConfig)
     agent_session_sharing: SharePolicy = SharePolicy.NONE

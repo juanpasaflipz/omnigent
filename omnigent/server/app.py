@@ -128,6 +128,8 @@ from omnigent.server.routes.sessions import (
     set_server_runner_router,
 )
 from omnigent.server.routes.sharing import create_sharing_router
+from omnigent.server.routes.shims import create_shims_router
+from omnigent.server.routes.subscriptions import create_subscriptions_router
 from omnigent.server.routes.terminal_attach import create_terminal_attach_router
 from omnigent.server.routes.usage import create_usage_router
 from omnigent.server.runner_session_init import (
@@ -156,6 +158,7 @@ from omnigent.stores.policy_store import PolicyStore
 from omnigent.stores.preference_store import PreferenceStore
 from omnigent.stores.project_store import ProjectStore
 from omnigent.stores.scheduled_task_store import ScheduledTaskStore
+from omnigent.stores.subscription_store import SubscriptionStore
 
 if TYPE_CHECKING:
     from omnigent.entities import Conversation
@@ -1348,6 +1351,7 @@ def create_app(
     policy_store: PolicyStore | None = None,
     permission_store: PermissionStore | None = None,
     scheduled_task_store: ScheduledTaskStore | None = None,
+    subscription_store: SubscriptionStore | None = None,
     project_store: ProjectStore | None = None,
     auth_provider: AuthProvider | None = None,
     host_store: HostStore | None = None,
@@ -1407,6 +1411,11 @@ def create_app(
         CRUD endpoints.
     :param permission_store: Store for session-level access grants.
         ``None`` disables permission checks (all access allowed).
+    :param subscription_store: Store backing event subscriptions. Used only
+        when the ``subscriptions`` feature flag is on; defaults to a
+        SQLAlchemy store on the scheduled-task store's database so the CLI
+        needs no extra wiring. The ``/v1/events`` ingest and
+        ``/v1/subscriptions`` routes mount only when both are available.
     :param scheduled_task_store: Store backing the recurring-task
         scheduler. When provided, the FastAPI lifespan
         starts an :class:`ScheduledTaskScheduler` that arms a timer per
@@ -3338,6 +3347,17 @@ def create_app(
         # Still report the list, so admin chrome shows even if promotion failed.
         return {"user_id": user_id, "is_admin": flagged or listed}
 
+    def _register_session_event_dispatch(handler: Any) -> None:
+        """Hand the session-event closure to startup inputs and the event bus.
+
+        Both post server-originated input into a session through the same
+        ``POST /v1/sessions/{id}/events`` logic; the event bus reads it off
+        ``app.state.session_event_dispatch`` at delivery time.
+        """
+        if startup_inputs is not None:
+            startup_inputs.dispatch = handler
+        app.state.session_event_dispatch = handler
+
     app.include_router(
         create_sessions_router(
             conversation_store,
@@ -3371,11 +3391,7 @@ def create_app(
             # files a session into a project (owner-private membership).
             project_store=project_store,
             background_title_coordinator=background_title_coordinator,
-            register_startup_dispatch=lambda handler: (
-                setattr(startup_inputs, "dispatch", handler)
-                if startup_inputs is not None
-                else None
-            ),
+            register_startup_dispatch=_register_session_event_dispatch,
             register_initial_file_upload=lambda handler: setattr(
                 app.state, "initial_file_upload", handler
             ),
@@ -3419,6 +3435,13 @@ def create_app(
         ),
         prefix="/v1",
         tags=["usage"],
+    )
+    # Shim registry report (designs/HARNESS_FLYWHEEL.md section 3): which
+    # deterministic model-gap patches still fire, for the shim-janitor automation.
+    app.include_router(
+        create_shims_router(auth_provider=auth_provider),
+        prefix="/v1",
+        tags=["shims"],
     )
     # Server agent discovery for the new-session picker
     # (designs/BUILTIN_AGENTS.md), plus user agents (``omnigent agent add``).
@@ -3550,6 +3573,39 @@ def create_app(
             prefix="/v1",
             tags=["scheduled_tasks"],
         )
+    # Event subscriptions ride the ``subscriptions`` release flag so the
+    # ingest surface can be unshipped without a refactor. The store defaults
+    # to the scheduled-task store's database when the caller passed none.
+    if resolved_feature_flags.enabled(Feature.SUBSCRIPTIONS):
+        if subscription_store is None and scheduled_task_store is not None:
+            from omnigent.stores.subscription_store.sqlalchemy_store import (
+                SqlAlchemySubscriptionStore,
+            )
+
+            subscription_store = SqlAlchemySubscriptionStore(scheduled_task_store.storage_location)
+        if subscription_store is not None:
+            from omnigent.server.events import EventBus
+            from omnigent.server.events.delivery import build_wake_delivery
+            from omnigent.server.routes.events import create_events_router
+
+            event_bus = EventBus(subscription_store, build_wake_delivery(app))
+            app.state.event_bus = event_bus
+            app.state.subscription_store = subscription_store
+            app.include_router(
+                create_events_router(event_bus, auth_provider=auth_provider),
+                prefix="/v1",
+                tags=["events"],
+            )
+            app.include_router(
+                create_subscriptions_router(
+                    subscription_store,
+                    conversation_store=conversation_store,
+                    permission_store=permission_store,
+                    auth_provider=auth_provider,
+                ),
+                prefix="/v1",
+                tags=["subscriptions"],
+            )
     # Admin control for the server-wide sharing settings. Always mounted (the
     # handlers self-gate on admin); PUT is a no-op-reject unless this server
     # resolves the setting from the editable file-backed default.

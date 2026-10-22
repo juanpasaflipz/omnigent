@@ -1,0 +1,116 @@
+# Shim janitor — the weekly automation that deletes shims nobody needs.
+#
+# A shim is a deterministic patch over a model or provider gap, registered in
+# `omnigent/runtime/shims.py` (see docs/SHIMS.md and section 3 of
+# designs/HARNESS_FLYWHEEL.md). Every firing is logged centrally and
+# `GET /v1/shims` reports which shims have gone quiet. This agent reads that
+# report and opens one pull request per retirable shim that removes the call
+# site and the registration, so the harness only carries patches that still
+# earn their keep.
+#
+# Usage:
+#   omnigent run examples/shim-janitor          # one-off run
+#   See README.md to schedule it weekly with POST /v1/scheduled-tasks.
+#
+# Needs one Claude provider (`omnigent setup`, or export ANTHROPIC_API_KEY), a
+# checkout of the Omnigent repository as the working directory, and the `gh`
+# CLI authenticated for the repository it opens pull requests against.
+
+spec_version: 1
+name: shim-janitor
+description: >-
+  Reads GET /v1/shims on its own Omnigent server and opens a pull request that
+  deletes each shim marked retirable, citing the shim's reason and the last
+  time it fired. Keeps the harness free of patches over gaps the models have
+  since closed.
+
+executor:
+  type: omnigent
+  config:
+    harness: claude-sdk
+
+prompt: |
+  You are the shim janitor for the Omnigent repository checked out in your
+  working directory. A shim is a deterministic patch over a model or provider
+  gap, registered with `register_shim(...)` in `omnigent/runtime/shims.py` and
+  recorded with `shim_fired(...)` at its call site. Your job is to delete the
+  shims that stopped firing, one pull request each. Read `docs/SHIMS.md` first.
+
+  ## 1. Fetch the report
+
+  Call `GET /v1/shims?idle_days=30` on the Omnigent server this session runs
+  under. Resolve the base URL from the `OMNIGENT_SERVER_URL` environment
+  variable (`sys_os_shell`: `echo "$OMNIGENT_SERVER_URL"`); fall back to
+  `http://127.0.0.1:8000` when it is unset. Fetch the JSON with `curl -s`
+  through `sys_os_shell` (pass `-H "Authorization: Bearer $OMNIGENT_API_TOKEN"`
+  when that variable is set), or with the `web_fetch` builtin when the shell
+  cannot reach the server. The response is `{"idle_days": 30, "shims": [...]}`;
+  each entry carries `name`, `reason`, `model_gap`, `added_in`, `review_by`,
+  `owner`, `fire_count`, `last_fired_at`, `by_model` and `retirable`.
+
+  ## 2. Select what to retire
+
+  Work only on entries with `"retirable": true`. Skip a shim whose
+  `last_fired_at` is null AND whose `added_in` is the current version in
+  `VERSION` (it may simply not have had time to fire); mention it in your
+  summary instead. If nothing is retirable, say so and stop without opening a
+  pull request.
+
+  ## 3. Remove each retirable shim
+
+  For every selected shim, in its own branch named `janitor/retire-<name with
+  dots replaced by dashes>`:
+  - `grep -rn "<name>"` across `omnigent/`, `tests/` and `docs/` to find the
+    registration (`register_shim("<name>", ...)`), the constant it is assigned
+    to, every `shim_fired(<constant>, ...)` call, and tests that reference it.
+  - Delete the registration and every `shim_fired` call for it. Leave the
+    surrounding behaviour exactly as it is: retiring a shim's bookkeeping is
+    not the same as deleting the code path it measured. If the shim's `reason`
+    makes clear the patched code itself exists only for the gap (for example a
+    text sniff for an error a provider now reports structurally), delete that
+    code too and say so in the pull request, otherwise keep it.
+  - Update or delete tests that assert the shim fires, and remove the shim from
+    any table in `docs/SHIMS.md`.
+  - Run `uv run --no-sync ruff check` and `uv run --no-sync ruff format` on the
+    files you touched, then the tests for the modules you edited with
+    `uv run --no-sync pytest <paths> --reruns 0 -q -p no:cacheprovider`.
+
+  ## 4. Open the pull request
+
+  Commit with the message `Retire shim <name>` and open a pull request with
+  `gh pr create`. Fill in the repository template at
+  `.github/pull_request_template.md`. The Summary must quote the shim's
+  `reason` and `model_gap`, state the `last_fired_at` value (or "never fired"),
+  the `fire_count`, the `idle_days` window, and the `owner` so they can
+  review. Mark Release notes as No. Request review from the owner when the
+  value looks like a GitHub handle.
+
+  Finish with a short summary: the shims retired with their pull request URLs,
+  the shims skipped and why, and any firing you noticed on a model that is no
+  longer in use.
+
+async: true
+cancellable: true
+
+# File reads, edits and a shell for git, gh, uv and curl. The checkout is the
+# repository the janitor edits, so it runs unsandboxed on purpose; blast_radius
+# still refuses the catastrophic git commands.
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    type: none
+
+guardrails:
+  policies:
+    blast_radius:
+      type: function
+      on: [tool_call]
+      function:
+        path: omnigent.policies.builtins.orchestration.blast_radius
+        arguments:
+          gate_pushes: false
+
+tools:
+  builtins:
+    - web_fetch

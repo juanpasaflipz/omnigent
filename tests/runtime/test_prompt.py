@@ -13,6 +13,7 @@ from omnigent.runner.subagent_work import (
 from omnigent.runtime.mcp_tool_result import encode_mcp_image_result
 from omnigent.runtime.prompt import (
     EMBEDDED_BROWSER_PRIORITY_INSTRUCTION,
+    EVENT_WAKE_NOTICE_INSTRUCTION,
     SUBAGENT_WAKE_NOTICE_INSTRUCTION,
     SUBAGENT_WAKE_NOTICE_SHAPE,
     append_framework_instructions,
@@ -34,6 +35,7 @@ def _spec(
     spawn: bool = False,
     builtins: tuple[str, ...] = (),
     browser: bool = True,
+    subscriptions: bool = False,
 ) -> AgentSpec:
     """
     Stub only the AgentSpec fields the instruction builders read.
@@ -48,6 +50,7 @@ def _spec(
                 builtins=[SimpleNamespace(name=name) for name in builtins],
             ),
             spawn=spawn,
+            subscriptions=subscriptions,
             tool_groups=SimpleNamespace(browser=browser),
         ),
     )
@@ -437,6 +440,28 @@ def test_raw_author_instructions_verbatim_and_none() -> None:
 
     whitespace_only = cast(AgentSpec, SimpleNamespace(instructions="   \n  "))
     assert raw_author_instructions(whitespace_only) is None
+
+
+# ─── ``subscriptions: true`` adds the event wake notice guidance ────
+
+
+def test_event_wake_guidance_follows_subscriptions_gate() -> None:
+    """
+    Only an agent that can call ``sys_subscribe`` (``subscriptions: true``)
+    is told what an event wake notice looks like; it lands after the
+    sub-agent notice and before the browser guidance, and an unauthored
+    spec still composes it without the fabricated fallback.
+    """
+    subscribed = _spec("Agent prompt", spawn=True, subscriptions=True)
+    assert build_instructions_nullable(subscribed, None, []) == (
+        f"Agent prompt\n\n{SUBAGENT_WAKE_NOTICE_INSTRUCTION}\n\n"
+        f"{EVENT_WAKE_NOTICE_INSTRUCTION}\n\n{EMBEDDED_BROWSER_PRIORITY_INSTRUCTION}"
+    )
+    unauthored = _spec(None, subscriptions=True, browser=False)
+    assert build_instructions_nullable(unauthored, None, []) == EVENT_WAKE_NOTICE_INSTRUCTION
+    assert EVENT_WAKE_NOTICE_INSTRUCTION not in (
+        build_instructions_nullable(_spec("Agent prompt"), None, []) or ""
+    )
 
 
 # ─── ``tool_groups.browser: false`` drops the browser guidance ────

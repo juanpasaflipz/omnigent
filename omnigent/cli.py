@@ -7200,6 +7200,179 @@ def _render_usage(report: dict[str, Any], limit: int) -> None:  # type: ignore[e
     ui.console.print(tbl)
 
 
+# A session whose cache hit rate trails its harness average by more than this
+# many percentage points is flagged in ``omni usage --efficiency``.
+_EFFICIENCY_OUTLIER_GAP = 0.25
+
+
+def _efficiency_outlier_ids(report: dict[str, Any]) -> set[str]:  # type: ignore[explicit-any]
+    """
+    Pick the sessions whose cache hit rate is far below their harness average.
+
+    Computed client-side from the report: a session is an outlier when both
+    its own ``cache_hit_rate`` and its harness's (``by_harness``) are known
+    and the session trails by more than :data:`_EFFICIENCY_OUTLIER_GAP`.
+    Sessions with no resolved harness compare against the ``"unknown"``
+    bucket the server groups them under.
+
+    :param report: The decoded ``GET /v1/usage/efficiency`` JSON body.
+    :returns: The ids of the flagged sessions.
+    """
+    by_harness = report.get("by_harness") or {}
+    flagged: set[str] = set()
+    for session in report.get("sessions") or []:
+        session_rate = session.get("cache_hit_rate")
+        harness_rate = (by_harness.get(session.get("harness") or "unknown") or {}).get(
+            "cache_hit_rate"
+        )
+        if session_rate is None or harness_rate is None:
+            continue
+        if float(harness_rate) - float(session_rate) > _EFFICIENCY_OUTLIER_GAP:
+            flagged.add(str(session.get("id", "")))
+    return flagged
+
+
+def _render_usage_efficiency(report: dict[str, Any]) -> None:  # type: ignore[explicit-any]
+    """
+    Render the efficiency scorecard (``omni usage --efficiency``).
+
+    Prints the window totals, then a per-harness table, a per-model table
+    with each model's cost share, and finally the top sessions by cost. A
+    session row is marked ``!`` when its cache hit rate is more than 25
+    percentage points below its harness average (see
+    :func:`_efficiency_outlier_ids`). Rates the server could not compute
+    (no tokens recorded) print as ``—``.
+
+    :param report: The decoded ``GET /v1/usage/efficiency`` JSON body.
+    """
+    from rich.markup import escape
+    from rich.style import Style
+    from rich.text import Text
+
+    from omnigent.inner import ui
+
+    accent_bold = ui.console.get_style("omni.accent") + Style(bold=True)
+
+    def money(value: float | None) -> str:
+        return "—" if value is None else f"${float(value):,.2f}"
+
+    def pct(value: float | None) -> str:
+        return "—" if value is None else f"{float(value) * 100:.0f}%"
+
+    def tokens(value: int | None) -> str:
+        return f"{int(value or 0):,}"
+
+    def new_table() -> Table:
+        return Table(
+            box=box.SIMPLE_HEAVY,
+            show_edge=False,
+            header_style="bold",
+            border_style="omni.muted",
+        )
+
+    totals = report.get("totals") or {}
+    window_days = report.get("window_days", 0)
+
+    ui.console.print()
+    ui.console.print(
+        "[omni.muted]Rates are computed from recorded token counters; costs are "
+        "best-effort estimates.[/omni.muted]"
+    )
+    ui.console.print()
+    ui.console.print(Text(f"Totals (last {window_days} days)", style=accent_bold))
+    ui.kv("  Cost", money(totals.get("cost_usd", 0.0)), label_width=15)
+    ui.kv("  Sessions", str(totals.get("sessions", 0)), label_width=15)
+    ui.kv("  Cache hit", pct(totals.get("cache_hit_rate")), label_width=15)
+    ui.kv("  Output share", pct(totals.get("output_share")), label_width=15)
+    ui.kv("  Cost/session", money(totals.get("cost_per_session_usd")), label_width=15)
+    ui.console.print()
+
+    sessions = report.get("sessions") or []
+    if not sessions:
+        ui.console.print("  [omni.muted]No usage recorded in this window.[/omni.muted]")
+        return
+
+    ui.console.print(Text("By harness", style=accent_bold))
+    harness_tbl = new_table()
+    harness_tbl.add_column("Harness", no_wrap=True)
+    harness_tbl.add_column("Sessions", justify="right")
+    harness_tbl.add_column("Cost", justify="right", no_wrap=True)
+    harness_tbl.add_column("Cost/session", justify="right", no_wrap=True)
+    harness_tbl.add_column("Cache hit", justify="right")
+    harness_tbl.add_column("Output share", justify="right")
+    for harness, row in sorted(
+        (report.get("by_harness") or {}).items(),
+        key=lambda item: float(item[1].get("cost_usd", 0.0)),
+        reverse=True,
+    ):
+        harness_tbl.add_row(
+            escape(str(harness)),
+            str(row.get("sessions", 0)),
+            money(row.get("cost_usd", 0.0)),
+            money(row.get("cost_per_session_usd")),
+            pct(row.get("cache_hit_rate")),
+            pct(row.get("output_share")),
+        )
+    ui.console.print(harness_tbl)
+
+    ui.console.print(Text("By model", style=accent_bold))
+    model_tbl = new_table()
+    model_tbl.add_column("Model", no_wrap=True)
+    model_tbl.add_column("Cost", justify="right", no_wrap=True)
+    model_tbl.add_column("Cost share", justify="right")
+    model_tbl.add_column("Cache hit", justify="right")
+    model_tbl.add_column("Output share", justify="right")
+    model_tbl.add_column("Prompt tokens", justify="right")
+    model_tbl.add_column("Output tokens", justify="right")
+    for model_id, row in sorted(
+        (report.get("by_model") or {}).items(),
+        key=lambda item: float(item[1].get("cost_usd", 0.0)),
+        reverse=True,
+    ):
+        model_tbl.add_row(
+            escape(str(model_id)),
+            money(row.get("cost_usd", 0.0)),
+            pct(row.get("cost_share")),
+            pct(row.get("cache_hit_rate")),
+            pct(row.get("output_share")),
+            tokens(row.get("prompt_tokens")),
+            tokens(row.get("output_tokens")),
+        )
+    ui.console.print(model_tbl)
+
+    header = Text()
+    header.append("Top sessions by cost", style=accent_bold)
+    header.append(f" (top {len(sessions)})", style="omni.muted")
+    ui.console.print(header)
+    outliers = _efficiency_outlier_ids(report)
+    session_tbl = new_table()
+    session_tbl.add_column("", no_wrap=True)
+    session_tbl.add_column("Session ID", style="omni.muted", no_wrap=True)
+    session_tbl.add_column("Harness", no_wrap=True)
+    session_tbl.add_column("Cost", justify="right", no_wrap=True)
+    session_tbl.add_column("Cache hit", justify="right")
+    session_tbl.add_column("Output share", justify="right")
+    session_tbl.add_column("Title")
+    for session in sessions:
+        session_id = str(session.get("id", ""))
+        session_tbl.add_row(
+            "[bold omni.error]![/bold omni.error]" if session_id in outliers else "",
+            escape(session_id),
+            escape(str(session.get("harness") or "—")),
+            f"[bold]{money(session.get('cost_usd', 0.0))}[/bold]",
+            pct(session.get("cache_hit_rate")),
+            pct(session.get("output_share")),
+            escape(str(session.get("title") or "")),
+        )
+    ui.console.print(session_tbl)
+    if outliers:
+        ui.console.print(
+            "  [omni.muted]! cache hit rate more than 25 points below the harness "
+            "average — look for prompt churn (tools or instructions changing "
+            "between turns).[/omni.muted]"
+        )
+
+
 @cli.command("usage")
 @click.option(
     "--limit",
@@ -7222,7 +7395,23 @@ def _render_usage(report: dict[str, Any], limit: int) -> None:  # type: ignore[e
     default=False,
     help="Emit the raw usage report as JSON instead of the table.",
 )
-def usage(limit: int, server: str | None, as_json: bool) -> None:
+@click.option(
+    "--efficiency",
+    is_flag=True,
+    default=False,
+    help=(
+        "Show the efficiency scorecard (cache hit rate, output share, model mix) "
+        "instead of the cost report."
+    ),
+)
+@click.option(
+    "--days",
+    default=30,
+    show_default=True,
+    type=click.IntRange(min=1),
+    help="Window in UTC days for --efficiency, including today.",
+)
+def usage(limit: int, server: str | None, as_json: bool, efficiency: bool, days: int) -> None:
     """Show your Omnigent usage and costs.
 
     The summary is sourced from the per-user daily cost rollup, which
@@ -7239,10 +7428,19 @@ def usage(limit: int, server: str | None, as_json: bool) -> None:
     convention as the web session sidebar).
 
     \b
+    With --efficiency, the report instead explains the spend: cache hit rate
+    (cache_read / prompt tokens), output share (output / all tokens) and
+    cost share per model, with the costliest sessions on top. A session
+    marked "!" has a cache hit rate more than 25 points below its harness
+    average. --limit caps the session rows and --days sets the window.
+
+    \b
     Examples:
       omnigent usage
       omnigent usage --limit 25
       omnigent usage --json
+      omnigent usage --efficiency
+      omnigent usage --efficiency --days 7 --limit 20
     """
     import httpx
 
@@ -7261,7 +7459,10 @@ def usage(limit: int, server: str | None, as_json: bool) -> None:
         timeout=60.0,
         trust_env=_trust_env_for(base_url),
     ) as client:
-        resp = client.get("/v1/usage")
+        if efficiency:
+            resp = client.get("/v1/usage/efficiency", params={"days": days, "limit": limit})
+        else:
+            resp = client.get("/v1/usage")
         resp.raise_for_status()
         report = resp.json()
 
@@ -7269,6 +7470,9 @@ def usage(limit: int, server: str | None, as_json: bool) -> None:
         click.echo(json.dumps(report, indent=2))
         return
 
+    if efficiency:
+        _render_usage_efficiency(report)
+        return
     _render_usage(report, limit)
 
 

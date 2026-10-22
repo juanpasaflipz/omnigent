@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 
 from omnigent._wrapper_labels import WRAPPER_LABEL_KEY
 from omnigent.entities import Conversation
@@ -19,7 +20,8 @@ from omnigent.server.routes._sessions.helpers import (
     _resolve_harness_impl,
     _resolve_llm_model,
 )
-from omnigent.server.schemas import DailyCost, SessionUsage, UsageReport
+from omnigent.server.schemas import DailyCost, EfficiencyReport, SessionUsage, UsageReport
+from omnigent.server.usage_efficiency import aggregate, score_session, session_cost_usd
 from omnigent.stores import ConversationStore
 
 # The daily rollup floor for an "all-time" sum: earlier than any real row, so
@@ -38,6 +40,21 @@ def _day_offset(day_utc: str, *, days: int) -> str:
     """Return the UTC day *days* before *day_utc*, as ``"YYYY-MM-DD"``."""
     base = datetime.strptime(day_utc, "%Y-%m-%d").replace(tzinfo=UTC)
     return (base - timedelta(days=days)).date().isoformat()
+
+
+def _window_start_epoch(today_utc: str, *, days: int) -> int:
+    """
+    Return the Unix epoch of 00:00 UTC on the first day of a *days*-day window.
+
+    Same inclusive calendar-day semantics as the ``cost_last_7d`` /
+    ``cost_last_30d`` summary: today plus the ``days - 1`` prior UTC days.
+
+    :param today_utc: The current UTC day, ``"YYYY-MM-DD"``.
+    :param days: Window length in days, at least 1.
+    :returns: Epoch seconds of the window's first midnight.
+    """
+    first_day = _day_offset(today_utc, days=days - 1)
+    return int(datetime.strptime(first_day, "%Y-%m-%d").replace(tzinfo=UTC).timestamp())
 
 
 def _session_models(usage: dict[str, Any]) -> dict[str, float]:
@@ -106,13 +123,105 @@ def _session_cost(usage: dict[str, Any]) -> float:
 
     ``total_cost_usd`` is present only on priced sessions (the "priced ⟺ key
     present" contract); an absent or malformed value reads as ``0.0``.
+    Shared with the efficiency scorecard so both reports price a session
+    identically.
     """
-    if "total_cost_usd" not in usage:
-        return 0.0
-    try:
-        return float(usage["total_cost_usd"])
-    except (TypeError, ValueError):
-        return 0.0
+    return session_cost_usd(usage)
+
+
+def _walk_session_usage(
+    conversation_store: ConversationStore,
+    user_id: str | None,
+    *,
+    updated_since: int | None = None,
+) -> Iterator[tuple[Conversation, dict[str, Any], list[Conversation]]]:
+    """
+    Yield every top-level session the caller can read, with its subtree usage.
+
+    One walk serves both the cost report and the efficiency scorecard so the
+    two stay consistent: same listing filters, same user scoping, same
+    newest-activity-first order. Each session's sums and spawn tree come
+    from ONE tree load (see :func:`load_session_usage_and_tree`).
+
+    Pages a cursor to completion, so the caller must run under
+    :func:`restart_on_stale_cursor` and consume the iterator fully in one
+    call (a deleted cursor row raises mid-walk and the whole walk restarts).
+
+    :param conversation_store: Store to page sessions from.
+    :param user_id: The caller / ACL scope (``None`` in single-user mode).
+    :param updated_since: When set, stop at the first session whose
+        ``updated_at`` is older than this epoch. Valid because the walk is
+        ordered by ``updated_at`` descending.
+    :returns: ``(conversation, usage, tree)`` per session.
+    """
+    after: str | None = None
+    while True:
+        page = conversation_store.list_conversations(
+            limit=200,
+            after=after,
+            accessible_by=user_id,
+            has_agent_id=True,
+            kind="default",
+            order="desc",
+            sort_by="updated_at",
+        )
+        for conv in page.data:
+            if conv.agent_id is None:
+                continue
+            if updated_since is not None and conv.updated_at < updated_since:
+                return
+            # The list page already holds each row, so pass its root to skip
+            # re-reading the same conversation once per listed session.
+            usage, tree = load_session_usage_and_tree(
+                conv.id,
+                conversation_store,
+                root_conversation_id=conv.root_conversation_id,
+            )
+            yield conv, usage, tree
+        if not page.has_more:
+            return
+        after = page.last_id
+
+
+@restart_on_stale_cursor
+def _build_efficiency_report(
+    conversation_store: ConversationStore,
+    user_id: str | None,
+    *,
+    days: int,
+    limit: int,
+) -> EfficiencyReport:
+    """
+    Build the efficiency scorecard over the caller's recent sessions.
+
+    Walks the same sessions as :func:`_build_usage_report` (via
+    :func:`_walk_session_usage`), keeps those whose last activity falls in
+    the last *days* UTC calendar days, scores each from its cumulative
+    subtree usage and rolls them up with
+    :func:`omnigent.server.usage_efficiency.aggregate`. The harness is
+    always resolved here (the scorecard groups by it), independent of the
+    ``usage_page`` flag that gates it on the cost report.
+
+    :param conversation_store: Store to read sessions from.
+    :param user_id: The caller / ACL scope (``None`` in single-user mode).
+    :param days: Window length in UTC days, including today.
+    :param limit: Maximum number of session rows in the result.
+    :returns: The populated :class:`EfficiencyReport`.
+    """
+    window_start = _window_start_epoch(_utc_today(), days=days)
+    scored = [
+        score_session(
+            usage,
+            session_id=conv.id,
+            created_at=conv.created_at,
+            title=conv.title,
+            harness=_resolve_session_harness(conv),
+        )
+        for conv, usage, _tree in _walk_session_usage(
+            conversation_store, user_id, updated_since=window_start
+        )
+    ]
+    return aggregate(scored, window_days=days, limit=limit)
 
 
 @restart_on_stale_cursor
@@ -160,57 +269,32 @@ def _build_usage_report(
     total = conversation_store.sum_daily_cost(rollup_user, _EPOCH_DAY)
 
     sessions: list[SessionUsage] = []
-    after: str | None = None
-    while True:
-        page = conversation_store.list_conversations(
-            limit=200,
-            after=after,
-            accessible_by=user_id,
-            has_agent_id=True,
-            kind="default",
-            order="desc",
-            sort_by="updated_at",
+    for conv, usage, tree in _walk_session_usage(conversation_store, user_id):
+        # The harness roll-up needs the same tree the sums came from.
+        primary_harness = _resolve_session_harness(conv) if include_page_details else None
+        other_harnesses = (
+            _collect_other_harnesses(primary_harness, tree, conv.id)
+            if include_page_details
+            else None
         )
-        for conv in page.data:
-            if conv.agent_id is None:
-                continue
-            # The list page already holds each row, so pass its root to skip
-            # re-reading the same conversation once per listed session. Sums and
-            # rows come from ONE tree load: the harness roll-up below needs the
-            # same tree the sums came from, and loading it again doubled the tree
-            # pages read for every listed session.
-            usage, tree = load_session_usage_and_tree(
-                conv.id,
-                conversation_store,
-                root_conversation_id=conv.root_conversation_id,
+        sessions.append(
+            SessionUsage(
+                id=conv.id,
+                created_at=conv.created_at,
+                updated_at=conv.updated_at,
+                title=conv.title,
+                cost_usd=_session_cost(usage),
+                models=_session_models(usage),
+                harness=primary_harness,
+                other_harnesses=other_harnesses,
+                llm_model=(
+                    conv.model_override or _resolve_llm_model(conv)
+                    if include_page_details
+                    else None
+                ),
+                agent_name=conv.sub_agent_name if include_page_details else None,
             )
-            primary_harness = _resolve_session_harness(conv) if include_page_details else None
-            other_harnesses = (
-                _collect_other_harnesses(primary_harness, tree, conv.id)
-                if include_page_details
-                else None
-            )
-            sessions.append(
-                SessionUsage(
-                    id=conv.id,
-                    created_at=conv.created_at,
-                    updated_at=conv.updated_at,
-                    title=conv.title,
-                    cost_usd=_session_cost(usage),
-                    models=_session_models(usage),
-                    harness=primary_harness,
-                    other_harnesses=other_harnesses,
-                    llm_model=(
-                        conv.model_override or _resolve_llm_model(conv)
-                        if include_page_details
-                        else None
-                    ),
-                    agent_name=conv.sub_agent_name if include_page_details else None,
-                )
-            )
-        if not page.has_more:
-            break
-        after = page.last_id
+        )
 
     daily_costs_raw = (
         conversation_store.list_daily_costs(rollup_user, _EPOCH_DAY)
@@ -266,6 +350,31 @@ def create_usage_router(
             conversation_store,
             user_id,
             include_page_details=flags.enabled(Feature.USAGE_PAGE),
+        )
+
+    @router.get("/usage/efficiency", response_model=EfficiencyReport)
+    async def get_usage_efficiency(
+        request: Request,
+        days: int = Query(default=30, ge=1, le=366),
+        limit: int = Query(default=50, ge=1, le=1000),
+    ) -> EfficiencyReport:
+        """
+        Score the calling user's recent sessions for token efficiency.
+
+        Same caller scoping as ``GET /v1/usage`` (fail closed with 401 in
+        multi-user mode), and like it, not gated by the ``usage_page`` flag:
+        the scorecard is an API / CLI surface (``omni usage --efficiency``).
+
+        :param days: Window in UTC calendar days including today.
+        :param limit: Maximum number of top-cost session rows to return.
+        """
+        user_id = require_user(request, auth_provider)
+        return await asyncio.to_thread(
+            _build_efficiency_report,
+            conversation_store,
+            user_id,
+            days=days,
+            limit=limit,
         )
 
     return router

@@ -42,6 +42,7 @@ from omnigent.entities.session_resources import (
     get_resource_by_id,
     resolve_terminal_entry_by_resource_id,
 )
+from omnigent.entities.subscription import Subscription, SubscriptionState
 
 __all__ = [
     "DEFAULT_ENVIRONMENT_ID",
@@ -81,6 +82,8 @@ __all__ = [
     "SessionResourceView",
     "SlashCommandData",
     "StoredFile",
+    "Subscription",
+    "SubscriptionState",
     "TerminalCommandData",
     "filter_resources_by_type",
     "get_resource_by_id",

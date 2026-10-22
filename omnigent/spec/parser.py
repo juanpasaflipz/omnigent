@@ -305,6 +305,11 @@ def parse(root: Path, *, expand_env: bool = True) -> AgentSpec:
     # opt into the timer surface explicitly. See step 10 of the
     # harness contract migration.
     timers = bool(raw.get("timers", False))
+    # Top-level ``subscriptions:`` flag gates the event-subscription
+    # builtins (``sys_subscribe`` / ``sys_unsubscribe`` /
+    # ``sys_subscription_list``). Defaults to False like ``timers:`` —
+    # waking on external events is an explicit opt-in.
+    subscriptions = bool(raw.get("subscriptions", False))
     # Top-level ``spawn:`` flag grants spawning OUTSIDE any declared
     # sub-agent list: ``sys_session_create`` (existing agents by id,
     # or custom bundles via config_path) plus send/close to drive the
@@ -358,6 +363,7 @@ def parse(root: Path, *, expand_env: bool = True) -> AgentSpec:
         model_egress=model_egress,
         terminals=terminals,
         timers=timers,
+        subscriptions=subscriptions,
         spawn=spawn,
         tool_groups=tool_groups,
         agent_session_sharing=agent_session_sharing,

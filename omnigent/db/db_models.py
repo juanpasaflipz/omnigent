@@ -1667,3 +1667,68 @@ class SqlScheduledTaskRun(OmnigentBase):
             "conversation_id",
         ),
     )
+
+
+class SqlSubscription(OmnigentBase):
+    """
+    SQLAlchemy model for the ``subscriptions`` table.
+
+    A subscription is one session's saved interest in external events of one
+    ``(source, kind)`` that satisfy a field filter. The event bus reads active
+    rows by ``(state, source, kind)`` on every published event and stamps a
+    delivery back onto the row.
+
+    :param id: UUID primary key stored as 16 raw bytes (see :class:`Uuid16`),
+        surfaced as a bare 32-char hex string (no dashes).
+    :param user_id: Owner the wake notice is delivered as, e.g.
+        ``"alice@example.com"``. ``None`` in single-user / OSS mode.
+    :param conversation_id: Session the wake notice is posted into (relates to
+        ``conversations.id``; no DB foreign key, schema Rule R032).
+    :param source: Event source, e.g. ``"github"`` / ``"webhook"``.
+    :param kind: Normalized event kind, e.g. ``"check_run.completed"``.
+    :param match: Field filter as a JSON object; the store converts to/from a
+        dict at the row↔entity boundary.
+    :param note: Optional free-text label echoed in the wake notice.
+    :param state: Lifecycle state — ``active``/``paused``/``deleted``. The bus
+        only delivers to ``active`` rows.
+    :param last_fired_at: Unix epoch seconds of the most recent delivery, or
+        ``None`` if the subscription has never fired.
+    :param fire_count: Number of deliveries so far.
+    :param created_at: Unix epoch seconds at row creation.
+    :param updated_at: Unix epoch seconds of the last write, or ``None``.
+    """
+
+    __tablename__ = "subscriptions"
+
+    # Tenant partition key: Databricks workspace id owning this row (0 = default). Part of the PK.
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
+    # String(128) to match every other user-identity column in this schema.
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Relates to conversations.id. No DB foreign key (Rule R032).
+    conversation_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    kind: Mapped[str] = mapped_column(String(128), nullable=False)
+    # JSON object text; never SQL-queried (matching happens in the bus).
+    match: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    note: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    last_fired_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    fire_count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("state IN ('active', 'paused', 'deleted')", name="ck_subscriptions_state"),
+        # The bus's hot path: every published event loads active rows for its
+        # (source, kind) across all workspaces.
+        Index("ix_subscriptions_active_lookup", "state", "source", "kind"),
+        # Covers a user's subscription listing ordered by creation time.
+        Index("ix_subscriptions_user_scope", "workspace_id", "user_id", "created_at", "id"),
+    )

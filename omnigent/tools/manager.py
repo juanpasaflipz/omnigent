@@ -42,8 +42,11 @@ from omnigent.tools.builtins import (
     SysSessionRenameTool,
     SysSessionSendTool,
     SysSessionShareTool,
+    SysSubscribeTool,
+    SysSubscriptionListTool,
     SysTimerCancelTool,
     SysTimerSetTool,
+    SysUnsubscribeTool,
     UpdateCommentTool,
     any_skill_has_resources,
     get_builtin_tool,
@@ -181,6 +184,10 @@ class ToolManager:
         # as ``sys_call_async``, but with ``kind="timer"`` so they
         # don't block end-of-turn auto-collect.
         self._register_timer_tools()
+        # Event subscriptions (sys_subscribe / sys_unsubscribe /
+        # sys_subscription_list) register when the spec opts in via
+        # ``subscriptions: true``, mirroring the timers gate.
+        self._register_subscription_tools()
         # Task lifecycle builtin (sys_cancel_task) is auto-enabled
         # at the end so any AP-created background handle can point
         # at a stable cancel tool.
@@ -292,6 +299,32 @@ class ToolManager:
             if tool.name() in self._tools:
                 raise ValueError(
                     f"sys_timer_* tool {tool.name()!r} collides with an already-registered tool"
+                )
+            self._tools[tool.name()] = tool
+
+    def _register_subscription_tools(self) -> None:
+        """
+        Register the event-subscription builtins when the agent spec opts in.
+
+        Gated on :attr:`AgentSpec.subscriptions` (defaults to ``False``).
+        Agents that want to wake on external events declare
+        ``subscriptions: true`` at the top level of their YAML.
+
+        Registers :class:`SysSubscribeTool`, :class:`SysUnsubscribeTool`
+        and :class:`SysSubscriptionListTool`. The runner dispatches all
+        three to the server's ``/v1/subscriptions`` REST endpoints, which
+        only exist when the server's ``subscriptions`` feature flag is on.
+        See ``designs/HARNESS_FLYWHEEL.md`` §2.
+
+        :raises ValueError: If a ``sys_subscri*`` name collides with an
+            already-registered tool.
+        """
+        if not self._spec.subscriptions:
+            return
+        for tool in (SysSubscribeTool(), SysUnsubscribeTool(), SysSubscriptionListTool()):
+            if tool.name() in self._tools:
+                raise ValueError(
+                    f"subscription tool {tool.name()!r} collides with an already-registered tool"
                 )
             self._tools[tool.name()] = tool
 

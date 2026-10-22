@@ -42,6 +42,25 @@ SUBAGENT_WAKE_NOTICE_INSTRUCTION = (
     "approval) are routine runtime status messages in the same way."
 )
 
+# Shape of the wake notice the server's event bus posts into a subscribed
+# session when an external event matches (``omnigent.server.events.bus
+# .format_wake_notice``). Quoted verbatim so the model recognizes it as a
+# runtime signal rather than a user-typed instruction.
+EVENT_WAKE_NOTICE_SHAPE = (
+    "[System: event <source>/<kind> matched subscription <id> (<note>)]\n<fields as JSON>"
+)
+
+EVENT_WAKE_NOTICE_INSTRUCTION = (
+    "Event wake notices: when an external event (for example a GitHub "
+    "check run or a webhook) matches a subscription you created with "
+    "sys_subscribe, the Omnigent runtime posts the message "
+    f"`{EVENT_WAKE_NOTICE_SHAPE}` into this session, starting a new turn for "
+    "you if you are idle. Treat it as a routine runtime status message, not as "
+    "instructions typed by a person; read the event fields and act on them in "
+    "line with your task and the note you attached to the subscription. Call "
+    "sys_unsubscribe once a subscription has served its purpose."
+)
+
 # Steers models toward the embedded browser they are handed: a tool
 # description alone loses to a model's native web tooling, so the composed
 # system prompt must carry the preference explicitly.
@@ -74,14 +93,23 @@ def _framework_instructions_for(spec: AgentSpec) -> list[str]:
     agent unless the spec sets ``tool_groups.browser: false``, in which
     case the prompt must not steer the model toward tools it lacks.
 
+    The event wake guidance follows ``subscriptions: true``, the gate for
+    the ``sys_subscribe`` family.
+
     :param spec: The parsed AgentSpec.
     :returns: The applicable spec-level framework instructions; empty for
-        an agent with no sub-agents and the browser group disabled.
+        an agent with no sub-agents, no subscriptions and the browser group
+        disabled.
     """
     instructions: list[str] = []
     dispatches_web_researcher = any(entry.name == "web_fetch" for entry in spec.tools.builtins)
     if spec.tools.agents or spec.spawn or dispatches_web_researcher:
         instructions.append(SUBAGENT_WAKE_NOTICE_INSTRUCTION)
+    # Mirrors the ``sys_subscribe`` registration gate
+    # (``ToolManager._register_subscription_tools``): only an agent that
+    # can subscribe to events ever receives an event wake notice.
+    if spec.subscriptions:
+        instructions.append(EVENT_WAKE_NOTICE_INSTRUCTION)
     if spec.tool_groups.browser:
         instructions.append(EMBEDDED_BROWSER_PRIORITY_INSTRUCTION)
     return instructions

@@ -3149,6 +3149,154 @@ class UsageReport(BaseModel):
     sessions: list[SessionUsage] = Field(default_factory=list)
 
 
+class EfficiencyMetrics(BaseModel):
+    """
+    Token-efficiency rates derived from one set of summed usage counters.
+
+    Every rate is computed from the raw per-model token counters Omnigent
+    records (``input_tokens``, ``cache_read_input_tokens``,
+    ``cache_creation_input_tokens``, ``output_tokens``), so the same formulas
+    apply whether the counters were summed over one session, one model, one
+    harness, or the whole window:
+
+    - ``prompt_tokens = input + cache_read + cache_creation``
+    - ``cache_hit_rate = cache_read / prompt_tokens``
+    - ``output_share = output / (prompt_tokens + output)``
+
+    A rate is ``None`` when its denominator is zero (no tokens recorded), so
+    "nothing measured" is distinguishable from "measured as 0".
+
+    ``cost_usd`` is read from the recorded ``total_cost_usd`` and is subject
+    to the same caveat as :class:`SessionUsage`: per-model costs are
+    snapshots and are **not guaranteed to sum** to the authoritative session
+    figure, so a per-model ``cost_usd`` may differ from what the sessions it
+    came from add up to.
+
+    :param cost_usd: Recorded USD spend for the counters this row sums.
+    :param prompt_tokens: ``input + cache_read + cache_creation``.
+    :param output_tokens: Summed ``output_tokens``.
+    :param cache_hit_rate: ``cache_read / prompt_tokens``, in ``[0, 1]``, or
+        ``None`` when no prompt tokens were recorded.
+    :param output_share: ``output / (prompt_tokens + output)``, in
+        ``[0, 1]``, or ``None`` when no tokens were recorded.
+    """
+
+    cost_usd: float = 0.0
+    prompt_tokens: int = 0
+    output_tokens: int = 0
+    cache_hit_rate: float | None = None
+    output_share: float | None = None
+
+
+class EfficiencyTotals(EfficiencyMetrics):
+    """
+    :class:`EfficiencyMetrics` over a group of sessions (the window, or one
+    harness), plus the session count and the derived cost per session.
+
+    The rates are computed from the group's summed counters, not averaged
+    across sessions, so a long expensive session weighs more than a short
+    one. ``cost_usd`` is the sum of each session's authoritative
+    ``total_cost_usd``.
+
+    :param sessions: Number of sessions summed into this row.
+    :param cost_per_session_usd: ``cost_usd / sessions``, or ``None`` when
+        the group is empty.
+    """
+
+    sessions: int = 0
+    cost_per_session_usd: float | None = None
+
+
+class ModelEfficiency(EfficiencyMetrics):
+    """
+    :class:`EfficiencyMetrics` for one model id summed across every session
+    in the window, plus its share of spend.
+
+    ``cost_share = model cost / sum of all recorded per-model cost``. The
+    denominator is the per-model sum rather than the authoritative session
+    total because per-model costs are not guaranteed to tie out to it (see
+    :class:`SessionUsage`); dividing by their own sum keeps the shares a
+    true mix that adds up to ``1.0`` whenever any model cost was recorded.
+
+    :param cost_share: This model's fraction of recorded per-model cost, in
+        ``[0, 1]``, or ``None`` when no model cost was recorded at all.
+    """
+
+    cost_share: float | None = None
+
+
+class SessionEfficiency(BaseModel):
+    """
+    One session's efficiency row for ``GET /v1/usage/efficiency``.
+
+    Counters are the session's cumulative subtree usage (the session plus
+    every sub-agent it spawned), read the same way :class:`SessionUsage`
+    reads cost. Rates follow the :class:`EfficiencyMetrics` formulas.
+
+    :param id: Session/conversation identifier, e.g. ``"conv_abc123"``.
+    :param title: Optional human-readable title.
+    :param harness: Best-effort harness name (``"claude-native"``,
+        ``"codex-native"``, ...) or ``None`` when it cannot be resolved.
+    :param model_ids: Raw harness model ids that recorded usage in this
+        session, sorted by their recorded cost descending.
+    :param cost_usd: Authoritative cumulative USD spend for the subtree.
+    :param cache_hit_rate: See :class:`EfficiencyMetrics`.
+    :param output_share: See :class:`EfficiencyMetrics`.
+    :param prompt_tokens: See :class:`EfficiencyMetrics`.
+    :param output_tokens: See :class:`EfficiencyMetrics`.
+    :param created_at: Unix epoch seconds of creation.
+    """
+
+    id: str
+    title: str | None = None
+    harness: str | None = None
+    model_ids: list[str] = Field(default_factory=list)
+    cost_usd: float = 0.0
+    cache_hit_rate: float | None = None
+    output_share: float | None = None
+    prompt_tokens: int = 0
+    output_tokens: int = 0
+    created_at: int
+
+
+class EfficiencyReport(BaseModel):
+    """
+    The efficiency scorecard for ``GET /v1/usage/efficiency``.
+
+    Where :class:`UsageReport` says what the caller spent, this says *why*:
+    cache hit rate, output share and model mix, each derived from the token
+    counters already recorded per session (``designs/HARNESS_FLYWHEEL.md``
+    section 4).
+
+    The window follows the same UTC calendar-day semantics as
+    ``cost_last_30d``: today plus the ``window_days - 1`` prior days. A
+    session is in the window when its last activity falls inside it, and
+    its **whole** cumulative usage is counted (session usage is cumulative,
+    not per-day), so the totals here are not expected to tie out to the
+    daily-rollup summary in :class:`UsageReport`.
+
+    ``totals``, ``by_harness`` and ``by_model`` are computed over every
+    session in the window; ``sessions`` is the same set sorted by
+    ``cost_usd`` descending and truncated to the requested ``limit``, so the
+    worst offenders are on top.
+
+    :param window_days: Number of UTC days the report covers, incl. today.
+    :param totals: Metrics summed over every session in the window.
+    :param by_harness: Per-harness totals, keyed by harness name. Sessions
+        whose harness could not be resolved group under ``"unknown"``.
+    :param by_model: Per-model metrics and cost share, keyed by the raw
+        harness model id.
+    :param sessions: Top sessions by cost, descending.
+    """
+
+    object: Literal["usage_efficiency_report"] = "usage_efficiency_report"
+    window_days: int
+    totals: EfficiencyTotals = Field(default_factory=EfficiencyTotals)
+    by_harness: dict[str, EfficiencyTotals] = Field(default_factory=dict)
+    by_model: dict[str, ModelEfficiency] = Field(default_factory=dict)
+    sessions: list[SessionEfficiency] = Field(default_factory=list)
+
+
 # ── Permissions ────────────────────────────────────────────────────
 
 
