@@ -1,49 +1,13 @@
-"""Phase 0 characterization test — mid-turn cancellation re-arms the REPL.
-
-Submits a long-running prompt that produces visible streaming
-text, then issues the REPL's documented mid-turn cancellation
-mechanism. Asserts (a) the REPL stays alive (does NOT exit)
-after the cancellation, and (b) a follow-up prompt is accepted
-and produces a new assistant response — proving the streaming
-consumer re-armed for the next turn instead of getting stuck
-in a half-cancelled state.
-
-**The cancel gesture:** the REPL binds ``Escape`` to
-``host.cancel()`` (the ``@kb.add("escape")`` handler in
-``omnigent_ui_sdk.terminal._host``), which cancels the in-flight
-turn and renders a muted ``cancelled`` line — the surface the
-bottom toolbar advertises as "Esc cancel". This is the live
-mid-turn cancel path, and the design doc's spec ("send the
-cancel key, assert the REPL stays alive") maps onto it: the
-in-flight turn is cancelled, the REPL stays alive, and the next
-prompt re-uses the same streaming consumer. When Ctrl+C is later
-re-pointed from ``app.exit`` to this same cancel call, the test
-need only swap the keystroke and the assertions still hold.
-
-Turn synchronization uses the visible ``⠹ working`` activity
-line and the ``❯`` input prompt rather than the bottom-right
-``state:`` badge (truncated/CPR-suppressed under a PTY — see
-test_repl_smoke), and the cancel acknowledgement is the muted
-``cancelled`` line the run loop prints on Escape.
-
-**What breaks if this fails:**
-- The Escape cancel binding regresses so the in-flight turn
-  doesn't stop (no ``cancelled`` ack would print).
-- The REPL's stream consumer fails to re-arm after
-  cancellation — would manifest as the follow-up prompt never
-  reaching ``working`` or never settling back at ``❯``. **This
-  is the regression the design identified as the highest-priority
-  interrupt test.**
-
-Design reference: ``designs/OMNIGENT_INTEGRATION.md`` §Phase 0
-REPL pexpect suite — "Ctrl+C interrupt mid-stream".
-"""
+"""Cancel an in-flight REPL request, then render a follow-up answer."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
+from tests._helpers.polling import poll_until
+from tests.e2e.conftest import get_mock_requests
 from tests.e2e.omnigent._pexpect_harness import (
     await_turn_complete,
     clean_exit,
@@ -64,16 +28,14 @@ _COMPLETION_MARKER = r"❯ "
 _MODEL = "mock-model"
 _HARNESS = "openai-agents"
 
-# A prompt that produces visibly-long streaming output so the
-# cancellation lands while the turn is mid-flight rather than
-# right after the assistant finishes. With mock LLM the response
-# is instant, but the cancel gesture still exercises the path.
+# The mock holds this request until the user cancels it.
 _LONG_PROMPT = (
     "Count slowly from 1 to 100. Print one number per line, "
     "with a short verbal description after each number "
     "explaining what the number could mean. Take your time."
 )
 _FOLLOW_UP_PROMPT = "say hi"
+_FOLLOW_UP_ANSWER = "Hi there! How can I help you today?"
 
 # Cancellation acknowledgement rendered by the REPL's run loop
 # when the in-flight turn is cancelled: the muted ``cancelled``
@@ -117,34 +79,14 @@ def test_repl_cancel_re_arms_for_next_turn(
     mock_credentials_env: dict[str, str],
     mock_llm_server_url: str,
 ) -> None:
-    """
-    Submit a long prompt, ``/cancel`` it mid-stream, then
-    submit a follow-up and verify it completes — proving the
-    REPL stayed alive AND the streaming consumer re-armed.
-
-    Uses the mock LLM server. The first response is configured
-    with ``block: true`` so the turn stays in-flight long enough
-    for the cancel gesture to land. The follow-up gets a normal
-    text response.
-
-    :param omnigent_python: Interpreter with omnigent +
-        openai-agents installed.
-    :param omnigent_repo_root: Working directory for the
-        subprocess.
-    :param mock_credentials_env: Mock-LLM env vars.
-    :param mock_llm_server_url: Mock server URL for configuring
-        response queues.
-    """
-    # First response delivers instantly (mock LLM), so the cancel
-    # may land after the turn finishes. Either way, the follow-up
-    # turn exercises the re-arm path. Second response is the
-    # follow-up turn.
+    """Escape cancels a blocked provider call; the next answer reaches the terminal."""
     configure_mock_llm(
         mock_llm_server_url,
         [
-            {"text": "1. One is the loneliest number. 2. Two is company. 3. Three is a crowd."},
-            {"text": "Hi there! How can I help you today?"},
+            {"text": "The interrupted answer", "block": True},
+            {"text": _FOLLOW_UP_ANSWER},
         ],
+        key=_MODEL,
     )
 
     yaml_path = omnigent_repo_root / "tests" / "resources" / "examples" / "hello_world.yaml"
@@ -165,6 +107,14 @@ def test_repl_cancel_re_arms_for_next_turn(
         # visible ``⠹ working`` activity line marks the moment the
         # executor accepted the prompt and is producing output.
         child.expect(_RUNNING_MARKER, timeout=_INITIAL_RUNNING_BUDGET)
+        poll_until(
+            lambda: any(
+                _LONG_PROMPT in str(request)
+                for request in get_mock_requests(mock_llm_server_url, key=_MODEL)
+            ),
+            timeout_s=_INITIAL_RUNNING_BUDGET,
+            interval_s=0.1,
+        )
         # Press Escape — the REPL's live mid-turn cancel gesture.
         child.send("\x1b")
         # The muted ``cancelled`` line is the observable proof the
@@ -178,8 +128,9 @@ def test_repl_cancel_re_arms_for_next_turn(
             running_timeout=_FOLLOWUP_RUNNING_TIMEOUT,
             completion_timeout=_FOLLOWUP_COMPLETION_TIMEOUT,
             running_marker=_RUNNING_MARKER,
-            completion_pattern=_COMPLETION_MARKER,
+            completion_pattern=re.escape(_FOLLOW_UP_ANSWER),
         )
+        child.expect(_COMPLETION_MARKER, timeout=_FOLLOWUP_COMPLETION_TIMEOUT)
         clean_exit(child, timeout=_EXIT_TIMEOUT)
         exit_code = child.exitstatus
     finally:
