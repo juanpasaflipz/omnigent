@@ -407,6 +407,104 @@ def test_login_workspace_hosted_with_selector_binds_and_succeeds(
     assert load_databricks_workspace_host(_WORKSPACE_API_URL) == _WORKSPACE
 
 
+@pytest.mark.parametrize("auth_path", ["cached", "refreshed", "header"])
+def test_login_rejects_workspace_mismatch_without_changing_login(
+    monkeypatch: pytest.MonkeyPatch, token_dir: Path, auth_path: str
+) -> None:
+    """Even an HTTP 200 must not replace a login with a different workspace."""
+    from omnigent.cli_auth import store_databricks_auth
+
+    store_databricks_auth(
+        _WORKSPACE_API_URL, _WORKSPACE, user_id="previous@example.com", org_id="123456"
+    )
+    auth_file = token_dir / "auth_tokens.json"
+    original_auth = auth_file.read_bytes()
+    config_file = token_dir / "config.yaml"
+    config_file.write_text("server: https://previous.example.com\n")
+    original_config = config_file.read_bytes()
+    challenge = _response(401, headers={"www-authenticate": 'Bearer realm="DatabricksRealm"'})
+    responses = [] if auth_path == "header" else [challenge]
+    if auth_path == "refreshed":
+        responses.append(_response(403))
+    responses.append(
+        _response(
+            200,
+            headers={"x-databricks-org-id": "123456"},
+            body={"user_id": "alice@example.com"},
+        )
+    )
+    fake = _FakeHttpx(responses=responses)
+    login_calls = _patch_login_env(
+        monkeypatch, fake_httpx=fake, cached_tokens=["tok-cached", "tok-fresh"]
+    )
+
+    result = CliRunner().invoke(cli_group, ["login", f"{_WORKSPACE_API_URL}?o=123"])
+
+    assert result.exit_code != 0, result.output
+    assert "workspace 123" in result.output
+    assert "workspace 123456" in result.output
+    assert "truncated" in result.output
+    assert "Saved Omnigent login details were not changed" in result.output
+    assert "omnigent stop" not in result.output
+    assert fake.requests[-1]["params"] == {"o": "123"}
+    assert auth_file.read_bytes() == original_auth
+    assert config_file.read_bytes() == original_config
+    assert len(login_calls) == (1 if auth_path == "refreshed" else 0)
+
+
+@pytest.mark.parametrize("reported_org_id", ["123", None])
+def test_login_saves_selector_only_after_successful_verification(
+    monkeypatch: pytest.MonkeyPatch, token_dir: Path, reported_org_id: str | None
+) -> None:
+    """An accepted selector can switch workspaces, including on older servers."""
+    from omnigent.cli_auth import store_databricks_auth
+
+    store_databricks_auth(_WORKSPACE_API_URL, _WORKSPACE, org_id="123456")
+    fake = _FakeHttpx(
+        responses=[
+            _response(401, headers={"www-authenticate": 'Bearer realm="DatabricksRealm"'}),
+            _response(
+                200,
+                headers={"x-databricks-org-id": reported_org_id} if reported_org_id else {},
+                body={"user_id": "alice@example.com"},
+            ),
+        ]
+    )
+    _patch_login_env(monkeypatch, fake_httpx=fake)
+
+    result = CliRunner().invoke(cli_group, ["login", f"{_WORKSPACE_API_URL}?o=123"])
+
+    assert result.exit_code == 0, result.output
+    saved = json.loads((token_dir / "auth_tokens.json").read_text())[_WORKSPACE_API_URL]
+    assert saved["org_id"] == "123"
+    assert saved["user_id"] == "alice@example.com"
+    assert fake.requests[-1]["params"] == {"o": "123"}
+
+
+def test_rejected_login_preserves_saved_workspace(
+    monkeypatch: pytest.MonkeyPatch, token_dir: Path
+) -> None:
+    """A failed token verification cannot save the URL's proposed selector."""
+    from omnigent.cli_auth import store_databricks_auth
+
+    store_databricks_auth(_WORKSPACE_API_URL, _WORKSPACE, org_id="123456")
+    auth_file = token_dir / "auth_tokens.json"
+    original_auth = auth_file.read_bytes()
+    fake = _FakeHttpx(
+        responses=[
+            _response(401, headers={"www-authenticate": 'Bearer realm="DatabricksRealm"'}),
+            _response(403),
+        ]
+    )
+    _patch_login_env(monkeypatch, fake_httpx=fake, cached_tokens=[None, "tok-fresh"])
+
+    result = CliRunner().invoke(cli_group, ["login", f"{_WORKSPACE_API_URL}?o=123"])
+
+    assert result.exit_code != 0
+    assert "rejected the token" in result.output
+    assert auth_file.read_bytes() == original_auth
+
+
 def test_login_apps_fails_loud_without_databricks_extra(
     monkeypatch: pytest.MonkeyPatch, token_dir: Path
 ) -> None:
@@ -702,7 +800,7 @@ def test_login_threads_org_id_through_workspace_login_and_verify(
     # The verify request routes to the workspace via ?o= (and used the token).
     assert fake.requests[-1]["params"] == {"o": _ORG_ID}
     assert fake.requests[-1]["authorization"] == "Bearer tok-fresh"
-    # The selector is persisted (from the URL, authoritative over any header),
+    # The selector is persisted after verification (older servers omit the header),
     # keyed by the canonical query-free base — ``ServerUrl`` never lets ``?o=``
     # onto ``api_base``, so the store key is the bare host even though the
     # identity-patched expansion above didn't strip the query itself.
@@ -1410,29 +1508,34 @@ def test_resolve_server_url_does_not_store_selector_off_managed_mount(
     assert stored == []
 
 
-def test_resolve_server_url_reports_selector_persistence_failure(
+@pytest.mark.parametrize("saved_login", [False, True])
+def test_resolve_server_url_keeps_selector_process_local(
+    monkeypatch: pytest.MonkeyPatch, token_dir: Path, saved_login: bool
+) -> None:
+    """Parsing routes the command without creating or replacing a saved login."""
+    from omnigent.cli_auth import databricks_request_headers, store_databricks_auth
+
+    if saved_login:
+        store_databricks_auth(_WORKSPACE_API_URL, _WORKSPACE, org_id="123456")
+    auth_file = token_dir / "auth_tokens.json"
+    original_auth = auth_file.read_bytes() if saved_login else None
+
+    resolved = cli_mod._resolve_server_url(f"{_WORKSPACE_API_URL}?o=123")
+
+    assert resolved.org_id == "123"
+    assert databricks_request_headers(resolved.api_base)["X-Databricks-Org-Id"] == "123"
+    assert (auth_file.read_bytes() if auth_file.exists() else None) == original_auth
+
+
+def test_resolve_server_url_works_without_writable_auth_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A routing selector must not be silently dropped when state is unwritable."""
-
-    def fail_to_store(_server: str, _org_id: str) -> None:
-        raise PermissionError("read-only data directory")
-
-    monkeypatch.setattr(
-        cli_mod,
-        "_workspace_api_server_url",
-        lambda _server: _WORKSPACE_API_URL,
-    )
+    """URL parsing needs no disk write even when the command has a selector."""
     monkeypatch.setattr(
         "omnigent.cli_auth.store_databricks_org_id",
-        fail_to_store,
+        lambda *_args: pytest.fail("URL parsing must not save an unverified selector"),
     )
-
-    with pytest.raises(
-        click.ClickException,
-        match="Could not persist the workspace routing selector",
-    ):
-        cli_mod._resolve_server_url(f"{_WORKSPACE}/?o=2850744067564480")
+    assert cli_mod._resolve_server_url(f"{_WORKSPACE_API_URL}?o=123").org_id == "123"
 
 
 def test_workspace_url_expands_web_ui_path_to_api_mount(
