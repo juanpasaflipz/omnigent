@@ -1772,7 +1772,7 @@ def test_repl_ignores_unrelated_elicitation_resolved(
     _configure_mock_text(mock_llm_server_url, ["should not be reached"], match="unrelated-resolve")
     child = pexpect.spawn(
         ap_cli,
-        ["run", str(_ASK_DEMO_DIR)],
+        ["run", str(_ASK_DEMO_DIR), "--no-session"],
         env=repl_env,
         encoding="utf-8",
         codec_errors="replace",
@@ -1782,16 +1782,15 @@ def test_repl_ignores_unrelated_elicitation_resolved(
     try:
         server_url = _wait_for_prompt_ready(child, timeout=_LAUNCH_TIMEOUT)
         with httpx.Client(base_url=server_url, trust_env=False, timeout=10.0) as http:
-            sessions = http.get("/v1/sessions", params={"visibility": "all"})
-            sessions.raise_for_status()
-            # Newest first: the REPL just created its session. The needle-pinned
-            # snapshot polls below fail loudly if this is not that session.
-            session_id = sessions.json()["data"][0]["id"]
-
             # Turn 1: a real elicitation, declined at the keyboard. The session
             # snapshot's pending_elicitations supplies each prompt's id.
             child.send("first unrelated-resolve" + "\r")
             child.expect("approval required", timeout=30)
+            # ``--no-session`` creates the session with the first turn. The
+            # needle-pinned snapshot polls below fail loudly if this is not it.
+            sessions = http.get("/v1/sessions", params={"visibility": "all"})
+            sessions.raise_for_status()
+            session_id = sessions.json()["data"][0]["id"]
             prior_elicitation_id = poll_for_pending_elicitation(
                 http, conversation_id=session_id, timeout=15, needle="first unrelated-resolve"
             )["elicitation_id"]
