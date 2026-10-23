@@ -1864,6 +1864,125 @@
         "title": "DailyCost",
         "type": "object"
       },
+      "EfficiencyReport": {
+        "description": "The efficiency scorecard for `GET /v1/usage/efficiency`.\n\nWhere `UsageReport` says what the caller spent, this says *why*:\ncache hit rate, output share and model mix, each derived from the token\ncounters already recorded per session.\n\nThe window follows the same UTC calendar-day semantics as\n`cost_last_30d`: today plus the `window_days - 1` prior days. A\nsession is in the window when its last activity falls inside it, and\nits **whole** cumulative usage is counted (session usage is cumulative,\nnot per-day), so the totals here are not expected to tie out to the\ndaily-rollup summary in `UsageReport`.\n\n`totals`, `by_harness` and `by_model` are computed over every\nsession in the window; `sessions` is the same set sorted by\n`cost_usd` descending and truncated to the requested `limit`, so the\nworst offenders are on top.",
+        "properties": {
+          "by_harness": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/EfficiencyTotals"
+            },
+            "description": "Per-harness totals, keyed by harness name. Sessions whose harness could not be resolved group under `\"unknown\"`.",
+            "title": "By Harness",
+            "type": "object"
+          },
+          "by_model": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ModelEfficiency"
+            },
+            "description": "Per-model metrics and cost share, keyed by the raw harness model id.",
+            "title": "By Model",
+            "type": "object"
+          },
+          "object": {
+            "const": "usage_efficiency_report",
+            "default": "usage_efficiency_report",
+            "title": "Object",
+            "type": "string"
+          },
+          "sessions": {
+            "description": "Top sessions by cost, descending.",
+            "items": {
+              "$ref": "#/components/schemas/SessionEfficiency"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/EfficiencyTotals",
+            "description": "Metrics summed over every session in the window."
+          },
+          "window_days": {
+            "description": "Number of UTC days the report covers, incl. today.",
+            "format": "int64",
+            "title": "Window Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "window_days"
+        ],
+        "title": "EfficiencyReport",
+        "type": "object"
+      },
+      "EfficiencyTotals": {
+        "description": "`EfficiencyMetrics` over a group of sessions (the window, or one\nharness), plus the session count and the derived cost per session.\n\nThe rates are computed from the group's summed counters, not averaged\nacross sessions, so a long expensive session weighs more than a short\none. `cost_usd` is the sum of each session's authoritative\n`total_cost_usd`.",
+        "properties": {
+          "cache_hit_rate": {
+            "anyOf": [
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Hit Rate"
+          },
+          "cost_per_session_usd": {
+            "anyOf": [
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`cost_usd / sessions`, or `None` when the group is empty.",
+            "title": "Cost Per Session Usd"
+          },
+          "cost_usd": {
+            "default": 0.0,
+            "format": "double",
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "output_share": {
+            "anyOf": [
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Share"
+          },
+          "output_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "prompt_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "sessions": {
+            "default": 0,
+            "description": "Number of sessions summed into this row.",
+            "format": "int64",
+            "title": "Sessions",
+            "type": "integer"
+          }
+        },
+        "title": "EfficiencyTotals",
+        "type": "object"
+      },
       "ElicitationRequestEvent": {
         "description": "Synchronous request for a decision from upstream.\n\nEmitted by Omnigent (or, under the new contract, by a harness)\nwhen the LLM / a tool / a policy needs a verdict before\nproceeding. The consumer replies via\n`POST /v1/sessions/{session_id}/events` with\n`type == \"approval\"` and\n`omnigent.server.schemas.ElicitationResult` fields in\n`data`. This preserves MCP request/reply correlation by id\nwithout threading elicitations through PATCH.\n\nWire shape matches the existing emit at\n`omnigent/runtime/policies/approval.py:175`.",
         "properties": {
@@ -4153,6 +4272,68 @@
           "content"
         ],
         "title": "MessageData",
+        "type": "object"
+      },
+      "ModelEfficiency": {
+        "description": "`EfficiencyMetrics` for one model id summed across every session\nin the window, plus its share of spend.\n\n`cost_share = model cost / sum of all recorded per-model cost`. The\ndenominator is the per-model sum rather than the authoritative session\ntotal because per-model costs are not guaranteed to tie out to it (see\n`SessionUsage`); dividing by their own sum keeps the shares a\ntrue mix that adds up to `1.0` whenever any model cost was recorded.",
+        "properties": {
+          "cache_hit_rate": {
+            "anyOf": [
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Hit Rate"
+          },
+          "cost_share": {
+            "anyOf": [
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "This model's fraction of recorded per-model cost, in `[0, 1]`, or `None` when no model cost was recorded at all.",
+            "title": "Cost Share"
+          },
+          "cost_usd": {
+            "default": 0.0,
+            "format": "double",
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "output_share": {
+            "anyOf": [
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Share"
+          },
+          "output_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "prompt_tokens": {
+            "default": 0,
+            "format": "int64",
+            "title": "Prompt Tokens",
+            "type": "integer"
+          }
+        },
+        "title": "ModelEfficiency",
         "type": "object"
       },
       "ModelUsage": {
@@ -6499,6 +6680,107 @@
           "child_session_id"
         ],
         "title": "SessionCreatedEvent",
+        "type": "object"
+      },
+      "SessionEfficiency": {
+        "description": "One session's efficiency row for `GET /v1/usage/efficiency`.\n\nCounters are the session's cumulative subtree usage (the session plus\nevery sub-agent it spawned), read the same way `SessionUsage`\nreads cost. Rates follow the `EfficiencyMetrics` formulas.",
+        "properties": {
+          "cache_hit_rate": {
+            "anyOf": [
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "See `EfficiencyMetrics`.",
+            "title": "Cache Hit Rate"
+          },
+          "cost_usd": {
+            "default": 0.0,
+            "description": "Authoritative cumulative USD spend for the subtree.",
+            "format": "double",
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "created_at": {
+            "description": "Unix epoch seconds of creation.",
+            "format": "int64",
+            "title": "Created At",
+            "type": "integer"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Best-effort harness name (`\"claude-native\"`, `\"codex-native\"`, ...) or `None` when it cannot be resolved.",
+            "title": "Harness"
+          },
+          "id": {
+            "description": "Session/conversation identifier, e.g. `\"conv_abc123\"`.",
+            "title": "Id",
+            "type": "string"
+          },
+          "model_ids": {
+            "description": "Raw harness model ids that recorded usage in this session, sorted by their recorded cost descending.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Model Ids",
+            "type": "array"
+          },
+          "output_share": {
+            "anyOf": [
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "See `EfficiencyMetrics`.",
+            "title": "Output Share"
+          },
+          "output_tokens": {
+            "default": 0,
+            "description": "See `EfficiencyMetrics`.",
+            "format": "int64",
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "prompt_tokens": {
+            "default": 0,
+            "description": "See `EfficiencyMetrics`.",
+            "format": "int64",
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional human-readable title.",
+            "title": "Title"
+          }
+        },
+        "required": [
+          "id",
+          "created_at"
+        ],
+        "title": "SessionEfficiency",
         "type": "object"
       },
       "SessionForkRequest": {
@@ -17809,6 +18091,66 @@
           }
         },
         "summary": "Get Usage",
+        "tags": [
+          "usage"
+        ]
+      }
+    },
+    "/v1/usage/efficiency": {
+      "get": {
+        "description": "Score the calling user's recent sessions for token efficiency.\n\nSame caller scoping as `GET /v1/usage` (fail closed with 401 in\nmulti-user mode), and like it, not gated by the `usage_page` flag:\nthe scorecard is an API / CLI surface (`omni usage --efficiency`).",
+        "operationId": "get_usage_efficiency_v1_usage_efficiency_get",
+        "parameters": [
+          {
+            "description": "Window in UTC calendar days including today.",
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 366,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum number of top-cost session rows to return.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EfficiencyReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Usage Efficiency",
         "tags": [
           "usage"
         ]
