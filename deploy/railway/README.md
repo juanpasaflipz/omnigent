@@ -1,6 +1,6 @@
-# Omnigent on Railway
+# WakeVane on Railway
 
-Deploy the flywheel distribution to Railway: the server and web UI built from
+Deploy WakeVane, a distribution of Omnigent, to Railway: the server and web UI built from
 this repository, next to a managed Postgres, served over HTTPS on
 `*.up.railway.app`. A hosted server is also what makes subscriptions useful,
 because GitHub and Slack can only deliver events to a public URL.
@@ -9,7 +9,7 @@ because GitHub and Slack can only deliver events to a public URL.
 
 ```bash
 railway login
-deploy/railway/deploy.sh my-omnigent
+deploy/railway/deploy.sh my-wakevane
 ```
 
 The script creates the project, adds Postgres, adds an `omnigent` service built

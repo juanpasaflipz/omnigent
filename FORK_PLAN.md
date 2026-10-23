@@ -1,4 +1,7 @@
-# Fork plan: a harness built for the flywheel
+# WakeVane plan: a harness built for the flywheel
+
+WakeVane is the name of this distribution of Omnigent. The sections below
+still say "the fork" where they describe repository mechanics.
 
 This is the operating plan for forking `omnigent-ai/omnigent` into a harness we
 can share publicly, with the ideas from Jediah Katz's "Is the Agent Harness
