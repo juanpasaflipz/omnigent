@@ -46,6 +46,10 @@ function ShimDetails({ shim }: { shim: ShimStatus }) {
       <dd>{shim.modelGap}</dd>
       <dt className="text-muted-foreground">Added in</dt>
       <dd className="tabular-nums">{shim.addedIn}</dd>
+      <dt className="text-muted-foreground">Observed since</dt>
+      <dd className="tabular-nums">
+        {shim.firstSeenAt ? absoluteTime(Date.parse(shim.firstSeenAt)) : "—"}
+      </dd>
       <dt className="text-muted-foreground">Fires by model</dt>
       <dd>
         {models.length === 0 ? (
@@ -251,7 +255,7 @@ export function ShimsPage({ now }: ShimsPageProps = {}) {
                   {retirableCount} of {data.shims.length}
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  No firing in the last {data.idleDays} days.{" "}
+                  Observed for {data.idleDays} days without a firing.{" "}
                   <a
                     href={SHIMS_DOCS_URL}
                     target="_blank"

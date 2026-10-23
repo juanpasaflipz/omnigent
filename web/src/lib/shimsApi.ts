@@ -13,6 +13,7 @@ interface ShimStatusWire {
   last_fired_at: string | null;
   by_model: Record<string, number>;
   retirable: boolean;
+  first_seen_at?: string | null;
 }
 
 interface ShimReportWire {
@@ -34,8 +35,10 @@ export interface ShimStatus {
   lastFiredAt: string | null;
   /** Firings per model id; `"unknown"` when the call site had no model. */
   byModel: Record<string, number>;
-  /** True when the shim has not fired within `idleDays`. */
+  /** True when the server has observed the shim for `idleDays` and it has not fired in that time. */
   retirable: boolean;
+  /** ISO-8601 UTC timestamp from which this deployment has observed the shim. */
+  firstSeenAt: string | null;
 }
 
 export interface ShimReport {
@@ -61,6 +64,7 @@ export async function fetchShimReport(idleDays: number): Promise<ShimReport> {
       lastFiredAt: s.last_fired_at ?? null,
       byModel: s.by_model ?? {},
       retirable: s.retirable,
+      firstSeenAt: s.first_seen_at ?? null,
     })),
   };
 }

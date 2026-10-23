@@ -10,6 +10,7 @@ vi.mock("@/lib/analytics", () => ({
 
 import { authenticatedFetch } from "@/lib/identity";
 import { SHIMS_DOCS_URL, ShimsPage } from "./ShimsPage";
+import { absoluteTime } from "@/lib/relativeTime";
 
 const NOW = new Date("2026-10-22T12:00:00Z");
 
@@ -25,6 +26,7 @@ function shimWire(overrides: Record<string, unknown> = {}) {
     last_fired_at: "2026-10-20T12:00:00+00:00",
     by_model: { "claude-haiku-4-5": 9, unknown: 3 },
     retirable: false,
+    first_seen_at: "2026-09-01T09:00:00+00:00",
     ...overrides,
   };
 }
@@ -100,6 +102,10 @@ describe("ShimsPage", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText(/routes prefix-less ids/)).toBeInTheDocument();
     expect(screen.getByText(/emits a bare provider model id/)).toBeInTheDocument();
+    expect(screen.getByText("Observed since")).toBeInTheDocument();
+    expect(
+      screen.getByText(absoluteTime(Date.parse("2026-09-01T09:00:00+00:00"))),
+    ).toBeInTheDocument();
     const counts = screen.getByRole("list", { name: "Fires by model" });
     expect(
       within(counts)
@@ -115,7 +121,7 @@ describe("ShimsPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "90 days" }));
 
-    expect(await screen.findByText(/No firing in the last 90 days/)).toBeInTheDocument();
+    expect(await screen.findByText(/Observed for 90 days without a firing/)).toBeInTheDocument();
     expect(authenticatedFetch).toHaveBeenLastCalledWith("/v1/shims?idle_days=90");
     expect(screen.getByRole("button", { name: "90 days" })).toHaveAttribute("aria-pressed", "true");
   });
