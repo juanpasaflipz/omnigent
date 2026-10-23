@@ -45,8 +45,46 @@ short-lived token minted from that user's authorization — never a shared PAT.
 - Your Omnigent server's public origin, e.g.
   `https://omnigent.example.com`. The OAuth callback must be
   reachable from a browser at `…/v1/connections/github/callback`.
-- The credential store configured (`OMNIGENT_CREDENTIAL_*` / KMS) so tokens can
-  be encrypted at rest — the connect store is only wired when it is present.
+- The credential store configured so tokens can be encrypted at rest — the
+  connect store is only wired when it is present. See
+  [Encrypting stored tokens](#encrypting-stored-tokens) below.
+
+### Encrypting stored tokens
+
+Omnigent never stores a GitHub token in plaintext. Configure exactly one of
+these backends on the server (more than one needs `OMNIGENT_CREDENTIAL_CIPHER`
+set to `local`, `kms`, or `vault` to pick the one that writes):
+
+| Option | Set | When to use it |
+| --- | --- | --- |
+| Local key | `OMNIGENT_CREDENTIAL_ENC_KEY` = output of `openssl rand -base64 32` | Self-hosting (Railway, Docker, a VM). The default. |
+| AWS KMS | `OMNIGENT_CREDENTIAL_KMS_KEY_ID` = key id, ARN, or `alias/…`, plus AWS credentials allowed `kms:GenerateDataKey` and `kms:Decrypt` | Deployments on AWS that want an audit trail and revocation. |
+| Vault Transit | `OMNIGENT_CREDENTIAL_VAULT_KEY` (a `derived=true` Transit key), `VAULT_ADDR`, `VAULT_TOKEN` | Deployments that already run Vault. |
+
+A local key protects tokens if the database or a backup leaks, but not from
+someone who can read the server's environment. **Back the key up** (for
+example from Railway Variables): if it is lost, stored tokens cannot be
+recovered and every user has to connect GitHub again.
+
+**Rotating a local key:**
+
+1. Generate a new key with `openssl rand -base64 32`.
+2. Set it as `OMNIGENT_CREDENTIAL_ENC_KEY`, and move the old key into
+   `OMNIGENT_CREDENTIAL_ENC_KEYS_PREVIOUS` (comma-separated if there are
+   several). Old keys are only ever used to decrypt.
+3. Redeploy. Existing tokens keep working.
+4. Run `omnigent credentials rewrap` where the server's environment is set (on
+   Railway, open a shell with `railway ssh --service omnigent` and run it
+   there; it reads `DATABASE_URL` and the key variables). Add `--dry-run`
+   first to see the counts. It is safe to rerun.
+5. When it reports `0 failed` and nothing left to rewrap, remove the old key
+   from `OMNIGENT_CREDENTIAL_ENC_KEYS_PREVIOUS` and redeploy.
+
+**Moving from a local key to KMS** follows the same steps: set
+`OMNIGENT_CREDENTIAL_KMS_KEY_ID`, move the local key into
+`OMNIGENT_CREDENTIAL_ENC_KEYS_PREVIOUS` (or keep it in
+`OMNIGENT_CREDENTIAL_ENC_KEY` and set `OMNIGENT_CREDENTIAL_CIPHER=kms`), redeploy,
+run `omnigent credentials rewrap`, then remove the local key.
 
 ---
 
@@ -190,7 +228,9 @@ but no redirect URI can be resolved (neither `OMNIGENT_GITHUB_APP_REDIRECT_URI`
 nor `OMNIGENT_DOMAIN`), the feature logs a warning and **stays disabled**.
 
 > The at-rest encryption of stored tokens is the credential store's concern
-> (`OMNIGENT_CREDENTIAL_*` / KMS), not GitHub's — see
+> (a local key, KMS, or Vault; see [Encrypting stored tokens](#encrypting-stored-tokens)),
+> not GitHub's. If none is configured the server logs
+> `GitHub App is configured but disabled` at startup. Design details:
 > [`designs/CREDENTIAL_STORE.md`](../designs/CREDENTIAL_STORE.md).
 
 ---

@@ -62,6 +62,9 @@ dependencies = [
     "keyring>=24,<26",
     # Decode and validate public branding assets before serving them.
     "pillow>=13,<14",
+    # AES-256-GCM envelope encryption for stored integration credentials
+    # (omnigent/stores/credential_store/envelope.py).
+    "cryptography>=44",
     # Round-trip (comment/format-preserving) TOML editing of the user's
     # ~/.codex/config.toml when removing a Databricks provider
     # (omnigent/onboarding/ucode_cleanup.py). stdlib tomllib is read-only.

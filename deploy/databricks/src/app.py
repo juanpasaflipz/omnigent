@@ -289,13 +289,15 @@ try:
     databricks_store = None
     if databricks_config is not None:
         from omnigent.stores.credential_store import build_secret_cipher
+        from omnigent.stores.credential_store.secret_cipher import (
+            CREDENTIAL_BACKEND_SETUP_HINT,
+        )
 
         dbx_cipher = build_secret_cipher()
         if dbx_cipher is None:
             logger.error(
-                "Databricks account connection is configured but disabled: set the "
-                "credential store's key (OMNIGENT_CREDENTIAL_KMS_KEY_ID or "
-                "OMNIGENT_CREDENTIAL_VAULT_KEY) to enable it."
+                "Databricks account connection is configured but disabled: %s.",
+                CREDENTIAL_BACKEND_SETUP_HINT,
             )
         else:
             from omnigent.connections.databricks import DatabricksConnectionStore

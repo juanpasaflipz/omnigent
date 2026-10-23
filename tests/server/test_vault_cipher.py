@@ -12,15 +12,19 @@ is reachable. Requires a Transit key created with ``derived=true``.
 from __future__ import annotations
 
 import os
-from typing import Any
 
 import pytest
-from botocore.exceptions import ClientError
 
+from omnigent.stores.credential_store.local_cipher import (
+    CREDENTIAL_ENC_KEY_ENV_VAR,
+    CREDENTIAL_ENC_KEYS_PREVIOUS_ENV_VAR,
+    LocalSecretCipher,
+)
 from omnigent.stores.credential_store.secret_cipher import (
     CREDENTIAL_CIPHER_ENV_VAR,
     CREDENTIAL_KMS_KEY_ENV_VAR,
     KmsSecretCipher,
+    MultiBackendSecretCipher,
     SecretCipher,
     build_secret_cipher,
 )
@@ -28,6 +32,7 @@ from omnigent.stores.credential_store.vault_cipher import (
     CREDENTIAL_VAULT_KEY_ENV_VAR,
     VaultSecretCipher,
 )
+from tests.server.test_secretbox import _FakeKmsClient
 
 CTX_ALICE = {"workspace_id": "0", "user_id": "alice", "provider": "github", "account_id": ""}
 CTX_BOB = {"workspace_id": "0", "user_id": "bob", "provider": "github", "account_id": ""}
@@ -35,30 +40,6 @@ CTX_BOB = {"workspace_id": "0", "user_id": "bob", "provider": "github", "account
 VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://127.0.0.1:8200")
 VAULT_TOKEN = os.environ.get("VAULT_TOKEN", "devroot")
 VAULT_KEY = os.environ.get("OMNIGENT_CREDENTIAL_VAULT_KEY", "omnigent-cred")
-
-
-class _FakeKmsClient:
-    """In-memory KMS stand-in: decrypt succeeds only under the same context."""
-
-    def __init__(self) -> None:
-        self.store: dict[bytes, tuple[str, dict[str, str], bytes]] = {}
-        self._n = 0
-
-    def encrypt(self, *, KeyId: str, Plaintext: bytes, EncryptionContext: dict[str, str]) -> Any:
-        self._n += 1
-        blob = f"ct-{self._n}".encode()
-        self.store[blob] = (KeyId, dict(EncryptionContext), Plaintext)
-        return {"CiphertextBlob": blob, "KeyId": KeyId}
-
-    def decrypt(
-        self, *, CiphertextBlob: bytes, EncryptionContext: dict[str, str], KeyId: str | None = None
-    ) -> Any:
-        entry = self.store.get(CiphertextBlob)
-        if entry is None or entry[1] != dict(EncryptionContext):
-            raise ClientError(
-                {"Error": {"Code": "InvalidCiphertextException", "Message": "mismatch"}}, "Decrypt"
-            )
-        return {"Plaintext": entry[2], "KeyId": entry[0]}
 
 
 def _make_kms() -> SecretCipher:
@@ -148,6 +129,8 @@ def test_vault_key_repoint_propagates() -> None:
 def _clear_backend_env(mp: pytest.MonkeyPatch) -> None:
     for var in (
         CREDENTIAL_CIPHER_ENV_VAR,
+        CREDENTIAL_ENC_KEY_ENV_VAR,
+        CREDENTIAL_ENC_KEYS_PREVIOUS_ENV_VAR,
         CREDENTIAL_KMS_KEY_ENV_VAR,
         CREDENTIAL_VAULT_KEY_ENV_VAR,
     ):
@@ -183,3 +166,62 @@ def test_autodetect_single_then_ambiguous(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv(CREDENTIAL_KMS_KEY_ENV_VAR, "alias/x")
     with pytest.raises(ValueError):  # both + no selector → ambiguous, no silent precedence
         build_secret_cipher()
+
+
+def _b64_key() -> str:
+    import base64
+
+    return base64.b64encode(os.urandom(32)).decode()
+
+
+def test_local_key_is_auto_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv(CREDENTIAL_ENC_KEY_ENV_VAR, _b64_key())
+    assert isinstance(build_secret_cipher(), LocalSecretCipher)
+
+
+def test_local_and_kms_without_selector_is_ambiguous(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv(CREDENTIAL_ENC_KEY_ENV_VAR, _b64_key())
+    monkeypatch.setenv(CREDENTIAL_KMS_KEY_ENV_VAR, "alias/x")
+    with pytest.raises(ValueError, match="multiple credential backends"):
+        build_secret_cipher()
+
+
+def test_malformed_local_key_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv(CREDENTIAL_ENC_KEY_ENV_VAR, "too-short")
+    with pytest.raises(ValueError, match="openssl rand -base64 32"):
+        build_secret_cipher()
+
+
+@pytest.mark.parametrize("selected", ["local", "kms"])
+def test_explicit_selector_wins_and_keeps_the_other_backend_readable(
+    monkeypatch: pytest.MonkeyPatch, selected: str
+) -> None:
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv(CREDENTIAL_CIPHER_ENV_VAR, selected)
+    monkeypatch.setenv(CREDENTIAL_ENC_KEY_ENV_VAR, _b64_key())
+    monkeypatch.setenv(CREDENTIAL_KMS_KEY_ENV_VAR, "alias/x")
+    cipher = build_secret_cipher()
+    assert isinstance(cipher, MultiBackendSecretCipher)
+    expected = LocalSecretCipher if selected == "local" else KmsSecretCipher
+    assert isinstance(cipher.writer, expected)
+    assert cipher.write_origin is not None and cipher.write_origin.backend == selected
+
+
+def test_move_from_local_to_kms_reads_local_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Old local key kept as previous-only: KMS writes, local values still read."""
+    _clear_backend_env(monkeypatch)
+    old_key = _b64_key()
+    monkeypatch.setenv(CREDENTIAL_ENC_KEY_ENV_VAR, old_key)
+    local_value = build_secret_cipher().encrypt("ghu_local", context=CTX_ALICE)  # type: ignore[union-attr]
+
+    monkeypatch.delenv(CREDENTIAL_ENC_KEY_ENV_VAR)
+    monkeypatch.setenv(CREDENTIAL_ENC_KEYS_PREVIOUS_ENV_VAR, old_key)
+    monkeypatch.setenv(CREDENTIAL_KMS_KEY_ENV_VAR, "alias/omnigent-credentials")
+    cipher = build_secret_cipher()  # KMS auto-detected; previous keys alone don't count
+    assert isinstance(cipher, MultiBackendSecretCipher)
+    assert isinstance(cipher.writer, KmsSecretCipher)
+    assert cipher.decrypt(local_value, context=CTX_ALICE) == "ghu_local"
+    assert cipher.decrypt(local_value, context=CTX_BOB) is None

@@ -214,6 +214,7 @@ map an area, remove it here in the same change.
 - Installing reusable agents: `omnigent agent`
 - Integrations, extensions, and remote sandboxes: `omnigent integration`,
   `omnigent extensions`, `omnigent sandbox`
+- Server credential-store maintenance: `omnigent credentials`
 
 **Partly mapped:** embedded authentication covers project writes and supporting
 account-context tests; other resource APIs and real identity-provider journeys

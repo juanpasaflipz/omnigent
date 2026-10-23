@@ -24,7 +24,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from omnigent.entities import ProviderConnection
 from omnigent.server.routes.connections_base import ConnectionError, ConnectStart
-from omnigent.stores.credential_store.secret_cipher import SecretTooLargeError
+from omnigent.stores.credential_store.secret_cipher import (
+    CREDENTIAL_BACKEND_SETUP_HINT,
+    SecretTooLargeError,
+)
 from omnigent.stores.credential_store.sqlalchemy_store import CredentialStore
 
 _logger = logging.getLogger(__name__)
@@ -183,7 +186,10 @@ class McpRegistry:
             WeakValueDictionary()
         )
         if any(s.auth in {"oauth", "bearer"} for s in config.services) and store is None:
-            raise ValueError("MCP account connections require the existing KMS or Vault cipher")
+            raise ValueError(
+                "MCP account connections need a credential store backend: "
+                f"{CREDENTIAL_BACKEND_SETUP_HINT}"
+            )
         self.state_secret = os.environ.get("OMNIGENT_MCP_OAUTH_STATE_SECRET", "")
         if any(s.oauth for s in config.services) and len(self.state_secret) < 32:
             raise ValueError(

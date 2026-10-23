@@ -4,8 +4,9 @@
 # Creates a project with a Postgres database and an `omnigent` service built
 # from this repository's `dist` branch (railway.toml builds the source
 # Dockerfile, web UI included), wires DATABASE_URL, attaches a volume for
-# artifacts and server state, generates an admin password and a GitHub webhook
-# secret, and gives the service a public *.up.railway.app domain.
+# artifacts and server state, generates an admin password, a GitHub webhook
+# secret, and the key that encrypts stored credentials, and gives the service a
+# public *.up.railway.app domain.
 #
 # Requirements: the Railway CLI, logged in (`railway login`), and Railway's
 # GitHub app allowed to read the repository.
@@ -26,6 +27,8 @@ railway whoami >/dev/null 2>&1 || { echo "Run 'railway login' first." >&2; exit 
 random_secret() { openssl rand -hex "$1"; }
 admin_password="$(random_secret 16)"
 webhook_secret="$(random_secret 32)"
+# 32 random bytes, base64: the local key that encrypts stored GitHub tokens.
+credential_key="$(openssl rand -base64 32)"
 
 echo "==> Creating project ${project_name}"
 railway init --name "$project_name" >/dev/null
@@ -56,6 +59,8 @@ set_secret() {
 }
 set_secret OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD "$admin_password"
 set_secret OMNIGENT_GITHUB_WEBHOOK_SECRET "$webhook_secret"
+set_secret OMNIGENT_CREDENTIAL_ENC_KEY "$credential_key"
+unset credential_key
 
 echo "==> Attaching a volume at /data"
 railway volume add --mount-path /data >/dev/null
@@ -79,4 +84,8 @@ the service's Variables as OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD):
 GitHub webhook secret for subscriptions (Variables: OMNIGENT_GITHUB_WEBHOOK_SECRET):
 
   ${webhook_secret}
+
+Back up OMNIGENT_CREDENTIAL_ENC_KEY from the service's Variables now. It
+encrypts stored GitHub tokens; if it is lost they cannot be recovered and every
+user has to connect GitHub again.
 EOF

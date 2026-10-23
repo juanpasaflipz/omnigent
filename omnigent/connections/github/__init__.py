@@ -96,3 +96,15 @@ class GithubConnectionStore(ConnectionStore[GithubConnection]):
         self._store.update_secret(
             user_id, self._PROVIDER, secret=self._secret(tokens), metadata=meta
         )
+
+
+def build_github_connection_store(storage_location: str) -> GithubConnectionStore | None:
+    """The GitHub connection store on the configured credential backend.
+
+    ``None`` (with an error log naming the options) when no backend is
+    configured, so a configured GitHub App never stores tokens unencrypted.
+    """
+    from omnigent.stores.credential_store.secret_cipher import build_integration_cipher
+
+    cipher = build_integration_cipher("GitHub App")
+    return GithubConnectionStore(storage_location, cipher) if cipher is not None else None

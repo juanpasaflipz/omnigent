@@ -14,8 +14,8 @@ deploy/railway/deploy.sh my-omnigent
 
 The script creates the project, adds Postgres, adds an `omnigent` service built
 from `juanpasaflipz/omnigent@dist`, wires `DATABASE_URL`, attaches a volume at
-`/data`, generates an admin password and a GitHub webhook secret, and prints a
-public domain. The first build compiles the web UI and the server and takes
+`/data`, generates an admin password, a GitHub webhook secret, and the credential
+encryption key, and prints a public domain. The first build compiles the web UI and the server and takes
 several minutes; follow it with `railway logs --build`. Sign in as `admin` with
 the printed password.
 
@@ -51,11 +51,17 @@ default; nothing needs to be set to enable them.
    | `OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME` | `admin` |
    | `OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD` | output of `openssl rand -hex 16` |
    | `OMNIGENT_GITHUB_WEBHOOK_SECRET` | output of `openssl rand -hex 32` |
+   | `OMNIGENT_CREDENTIAL_ENC_KEY` | output of `openssl rand -base64 32` |
    | `OMNIGENT_DATA_DIR` | `/data/omnigent` |
    | `OMNIGENT_ADMIN_CREDENTIALS_PATH` | `/data/admin-credentials` |
 
 3. Add a **Volume** to the service mounted at `/data`.
 4. Under **Settings, Networking**, generate a domain. Sign in as `admin`.
+
+> **Back up `OMNIGENT_CREDENTIAL_ENC_KEY`.** It encrypts stored GitHub tokens
+> and other connected-account credentials. If it is lost they cannot be
+> decrypted and every user has to reconnect. To rotate it, see
+> [Encrypting stored tokens](../../docs/GITHUB_APP_SETUP.md#encrypting-stored-tokens).
 
 > **Set the admin username too.** Without `OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME`
 > the first admin is named after the container's OS user, which is `root`.
@@ -162,13 +168,16 @@ button. It is created from a working project:
 1. Deploy once with `deploy.sh` or the dashboard steps above.
 2. Create a draft from the project, either with the dashboard's **Generate
    Template** action or `railway templates create` while linked to it.
-3. In the draft, replace the two generated secrets with template functions so
+3. In the draft, replace the generated secrets with template functions so
    every deploy gets its own:
 
    | Variable | Template value |
    | --- | --- |
    | `OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD` | `${{secret(32, "abcdef0123456789")}}` |
    | `OMNIGENT_GITHUB_WEBHOOK_SECRET` | `${{secret(64, "abcdef0123456789")}}` |
+   | `OMNIGENT_CREDENTIAL_ENC_KEY` | `${{secret(43, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")}}` |
+
+   43 base64url characters decode to the 32-byte key the server requires.
 
 4. Publish it and put its `railway.com/new/template/<code>` link in the README
    badge.
