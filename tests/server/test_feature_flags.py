@@ -15,7 +15,7 @@ from omnigent.server.feature_flags import (
 )
 
 # The flywheel distribution turns its own features on by default.
-_DISTRIBUTION_DEFAULTS = ("shims_page", "subscriptions", "usage_page")
+_DISTRIBUTION_DEFAULTS = ("shims_page", "subscriptions", "subscriptions_page", "usage_page")
 
 
 @pytest.mark.parametrize("environ", [{}, {FEATURES_ENV_VAR: ""}, {FEATURES_ENV_VAR: " , , "}])
@@ -23,7 +23,13 @@ def test_unset_or_empty_uses_feature_defaults(environ: dict[str, str]) -> None:
     flags = resolve_feature_flags(environ)
 
     assert flags.enabled_features == frozenset(
-        {Feature.CLAUDE_OSC_STATUS, Feature.SHIMS_PAGE, Feature.SUBSCRIPTIONS, Feature.USAGE_PAGE}
+        {
+            Feature.CLAUDE_OSC_STATUS,
+            Feature.SHIMS_PAGE,
+            Feature.SUBSCRIPTIONS,
+            Feature.SUBSCRIPTIONS_PAGE,
+            Feature.USAGE_PAGE,
+        }
     )
     assert flags.frontend_dict() == {
         "usage_page": True,
@@ -38,6 +44,7 @@ def test_unset_or_empty_uses_feature_defaults(environ: dict[str, str]) -> None:
         "automations_v2": False,
         "splittable_terminal_view_ui": False,
         "shims_page": True,
+        "subscriptions_page": True,
     }
 
 
@@ -74,7 +81,9 @@ def test_default_off_features_can_also_be_explicitly_disabled() -> None:
 
 
 def test_distribution_defaults_can_be_switched_off() -> None:
-    flags = resolve_feature_flags({FEATURES_ENV_VAR: "-usage_page,-shims_page,-subscriptions"})
+    flags = resolve_feature_flags(
+        {FEATURES_ENV_VAR: "-usage_page,-shims_page,-subscriptions,-subscriptions_page"}
+    )
 
     assert flags.enabled_names() == ("claude_osc_status",)
 
@@ -103,6 +112,14 @@ def test_shims_page_is_a_frontend_visible_feature() -> None:
 
     assert flags.enabled(Feature.SHIMS_PAGE)
     assert flags.frontend_dict()["shims_page"] is True
+
+
+def test_subscriptions_page_is_a_frontend_visible_feature() -> None:
+    flags = resolve_feature_flags({FEATURES_ENV_VAR: "-subscriptions_page"})
+
+    assert not flags.enabled(Feature.SUBSCRIPTIONS_PAGE)
+    assert flags.frontend_dict()["subscriptions_page"] is False
+    assert resolve_feature_flags({}).frontend_dict()["subscriptions_page"] is True
 
 
 def test_arca_shutdown_warnings_are_frontend_visible() -> None:

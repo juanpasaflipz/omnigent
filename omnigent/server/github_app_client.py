@@ -36,7 +36,26 @@ _BRANCHES_PER_PAGE = 100
 # branches, but the picker only needs a bounded, fast list.
 _BRANCHES_MAX_PAGES = 3
 
+_REPO_HOOKS_ENDPOINT = "https://api.github.com/repos/{full_name}/hooks"
+_REPO_HOOK_ENDPOINT = "https://api.github.com/repos/{full_name}/hooks/{hook_id}"
+_HOOKS_PER_PAGE = 100
+# A repository holds at most 20 webhooks per event, so one page covers it;
+# the cap only bounds a pathological response.
+_HOOKS_MAX_PAGES = 3
+
 _HTTP_TIMEOUT_S = 15.0
+
+
+class GitHubApiError(GitHubAppError):
+    """A GitHub REST call answered with an unexpected HTTP status.
+
+    Carries the status so callers can tell a permission problem (403/404)
+    from a transient upstream failure.
+    """
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class GitHubAppClient:
@@ -192,6 +211,109 @@ class GitHubAppClient:
                     break
         return branches
 
+    async def list_repo_hooks(self, access_token: str, full_name: str) -> list[dict[str, object]]:
+        """List the webhooks configured on ``full_name`` (``owner/repo``).
+
+        Needs the GitHub App's **Webhooks** repository permission (read).
+
+        :param access_token: A valid user access token.
+        :param full_name: The repository's ``owner/name``.
+        :returns: The hook objects as GitHub returns them.
+        :raises GitHubApiError: On a non-200 answer (403/404 when the token
+            cannot read the repository's webhooks).
+        """
+        url = _REPO_HOOKS_ENDPOINT.format(full_name=full_name)
+        hooks: list[dict[str, object]] = []
+        async with self._http_client() as client:
+            for page in range(1, _HOOKS_MAX_PAGES + 1):
+                resp = await client.get(
+                    url,
+                    params={"per_page": _HOOKS_PER_PAGE, "page": page},
+                    headers=_api_headers(access_token),
+                )
+                if resp.status_code != 200:
+                    raise GitHubApiError(
+                        f"GitHub GET /repos/{full_name}/hooks returned {resp.status_code}",
+                        resp.status_code,
+                    )
+                batch = resp.json()
+                if not isinstance(batch, list) or not batch:
+                    break
+                hooks.extend(entry for entry in batch if isinstance(entry, dict))
+                if len(batch) < _HOOKS_PER_PAGE:
+                    break
+        return hooks
+
+    async def create_repo_hook(
+        self,
+        access_token: str,
+        full_name: str,
+        *,
+        url: str,
+        secret: str,
+        events: list[str],
+    ) -> dict[str, object]:
+        """Create an active JSON webhook on ``full_name`` delivering *events* to *url*.
+
+        Needs the GitHub App's **Webhooks** repository permission (write).
+
+        :param access_token: A valid user access token.
+        :param full_name: The repository's ``owner/name``.
+        :param url: The payload URL, e.g. ``"https://x.example/v1/events/github"``.
+        :param secret: The shared secret GitHub signs deliveries with.
+        :param events: GitHub event names, e.g. ``["issues", "push"]``.
+        :returns: The created hook object.
+        :raises GitHubApiError: On a non-201 answer.
+        """
+        body = {
+            "name": "web",
+            "active": True,
+            "events": events,
+            "config": {
+                "url": url,
+                "content_type": "json",
+                "secret": secret,
+                "insecure_ssl": "0",
+            },
+        }
+        async with self._http_client() as client:
+            resp = await client.post(
+                _REPO_HOOKS_ENDPOINT.format(full_name=full_name),
+                json=body,
+                headers=_api_headers(access_token),
+            )
+        if resp.status_code != 201:
+            raise GitHubApiError(
+                f"GitHub POST /repos/{full_name}/hooks returned {resp.status_code}",
+                resp.status_code,
+            )
+        return resp.json()
+
+    async def add_repo_hook_events(
+        self, access_token: str, full_name: str, hook_id: int, events: list[str]
+    ) -> dict[str, object]:
+        """Add *events* to an existing webhook, leaving its config untouched.
+
+        :param access_token: A valid user access token.
+        :param full_name: The repository's ``owner/name``.
+        :param hook_id: The webhook's numeric id.
+        :param events: GitHub event names to add.
+        :returns: The updated hook object.
+        :raises GitHubApiError: On a non-200 answer.
+        """
+        async with self._http_client() as client:
+            resp = await client.patch(
+                _REPO_HOOK_ENDPOINT.format(full_name=full_name, hook_id=hook_id),
+                json={"add_events": events, "active": True},
+                headers=_api_headers(access_token),
+            )
+        if resp.status_code != 200:
+            raise GitHubApiError(
+                f"GitHub PATCH /repos/{full_name}/hooks/{hook_id} returned {resp.status_code}",
+                resp.status_code,
+            )
+        return resp.json()
+
     async def _token_request(self, fields: dict[str, str]) -> GitHubTokenSet:
         """POST the given form fields to the token endpoint and parse the reply."""
         async with self._http_client() as client:
@@ -203,3 +325,11 @@ class GitHubAppClient:
         if resp.status_code != 200:
             raise GitHubAppError(f"GitHub token endpoint returned {resp.status_code}")
         return token_set_from_payload(resp.json())
+
+
+def _api_headers(access_token: str) -> dict[str, str]:
+    """Headers for an authenticated GitHub REST call."""
+    return {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/vnd.github+json",
+    }

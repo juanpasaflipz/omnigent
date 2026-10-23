@@ -133,7 +133,7 @@ class UpdateSubscriptionRequest(BaseModel):
         return self
 
 
-def _to_response(subscription: Subscription) -> dict[str, Any]:
+def subscription_response(subscription: Subscription) -> dict[str, Any]:
     """Serialize a :class:`Subscription` to a JSON-safe dict."""
     return {
         "id": subscription.id,
@@ -323,7 +323,7 @@ def create_subscriptions_router(
                 max_cost_usd=body.max_cost_usd,
                 model_override=model_override,
             )
-            return _to_response(subscription)
+            return subscription_response(subscription)
 
         conversation_id = body.conversation_id
         assert conversation_id is not None  # exactly-one-target check above
@@ -352,21 +352,21 @@ def create_subscriptions_router(
             match=body.match,
             note=body.note,
         )
-        return _to_response(subscription)
+        return subscription_response(subscription)
 
     @router.get("/subscriptions")
     async def list_subscriptions(request: Request) -> dict[str, list[dict[str, Any]]]:
         """List the caller's subscriptions."""
         owner = _owner(request)
         owner_id = None if owner == RESERVED_USER_LOCAL else owner
-        return {"subscriptions": [_to_response(s) for s in store.list_for_user(owner_id)]}
+        return {"subscriptions": [subscription_response(s) for s in store.list_for_user(owner_id)]}
 
     @router.get("/subscriptions/{subscription_id}")
     async def get_subscription(request: Request, subscription_id: str) -> dict[str, Any]:
         """Fetch one of the caller's subscriptions."""
         owner = _owner(request)
         owner_id = None if owner == RESERVED_USER_LOCAL else owner
-        return _to_response(_require_owned(subscription_id, owner_id))
+        return subscription_response(_require_owned(subscription_id, owner_id))
 
     @router.patch("/subscriptions/{subscription_id}")
     async def update_subscription(
@@ -389,7 +389,7 @@ def create_subscriptions_router(
         updated = store.update(subscription_id, **kwargs)
         if updated is None:
             raise OmnigentError("Subscription not found", code=ErrorCode.NOT_FOUND)
-        return _to_response(updated)
+        return subscription_response(updated)
 
     @router.delete("/subscriptions/{subscription_id}")
     async def delete_subscription(request: Request, subscription_id: str) -> dict[str, Any]:

@@ -2,7 +2,12 @@
 
 import pytest
 
-from omnigent.server.paas_env import detect_base_url, resolve_bind_host
+from omnigent.server.paas_env import (
+    detect_base_url,
+    is_public_base_url,
+    resolve_bind_host,
+    resolve_public_base_url,
+)
 
 # A minimal env that trips the Railway detection (any RAILWAY_-prefixed key).
 _RAILWAY_ENV = {"RAILWAY_PUBLIC_DOMAIN": "svc.up.railway.app"}
@@ -82,3 +87,52 @@ def test_detect_base_url(environ: dict[str, str], expected: str):
     wrong ``OMNIGENT_ACCOUNTS_BASE_URL`` and break magic-link / cookie flows.
     """
     assert detect_base_url(environ, host="0.0.0.0", port=8000) == expected
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://omni.example.com", True),
+        ("https://svc.up.railway.app/base", True),
+        ("http://203.0.113.9:8000", False),  # reserved documentation range
+        ("http://8.8.8.8", True),
+        ("http://localhost:6767", False),
+        ("http://app.localhost", False),
+        ("http://127.0.0.1:6767", False),
+        ("http://0.0.0.0:8000", False),
+        ("http://10.1.2.3", False),
+        ("http://[::1]:8000", False),
+        ("http://testserver", False),
+        ("ftp://omni.example.com", False),
+        ("not a url", False),
+    ],
+)
+def test_is_public_base_url(url: str, expected: bool) -> None:
+    """Only addresses GitHub could deliver a webhook to count as public."""
+    assert is_public_base_url(url) is expected
+
+
+def test_resolve_public_base_url_prefers_configured_url() -> None:
+    environ = {
+        "OMNIGENT_ACCOUNTS_BASE_URL": "https://accounts.example.com/",
+        "RAILWAY_PUBLIC_DOMAIN": "svc.up.railway.app",
+    }
+    assert resolve_public_base_url(environ, "https://request.example.com") == (
+        "https://accounts.example.com",
+        "https://accounts.example.com",
+    )
+
+
+def test_resolve_public_base_url_skips_local_candidates() -> None:
+    environ = {"OMNIGENT_ACCOUNTS_BASE_URL": "http://0.0.0.0:8000", "OMNIGENT_DOMAIN": "omni.dev"}
+    assert resolve_public_base_url(environ, None) == ("https://omni.dev", "https://omni.dev")
+
+
+def test_resolve_public_base_url_falls_back_to_request_then_reports_local() -> None:
+    assert resolve_public_base_url({}, "https://req.example.com") == (
+        "https://req.example.com",
+        "https://req.example.com",
+    )
+    assert resolve_public_base_url(
+        {"OMNIGENT_ACCOUNTS_BASE_URL": "http://127.0.0.1:6767"}, "http://localhost:6767"
+    ) == (None, "http://127.0.0.1:6767")

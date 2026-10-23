@@ -1096,6 +1096,27 @@ describe("Sidebar session list", () => {
     expect(screen.getByTestId("new-chat-button")).not.toHaveClass("bg-[var(--sidebar-active)]");
   });
 
+  it("hides Subscriptions navigation while the release feature is off", () => {
+    mockConversations(THREE_TYPE_CONVERSATIONS);
+    renderSidebar(true, "/subscriptions");
+
+    expect(screen.queryByTestId("subscriptions-nav")).toBeNull();
+  });
+
+  it("shows and highlights Subscriptions navigation without lighting New session", () => {
+    mockConversations(THREE_TYPE_CONVERSATIONS);
+    renderSidebar(true, "/subscriptions", undefined, {
+      ...FALLBACK_SERVER_INFO,
+      features: { subscriptions_page: true },
+    });
+
+    const subscriptions = screen.getByTestId("subscriptions-nav");
+    expect(subscriptions).toHaveAttribute("href", "/subscriptions");
+    expect(subscriptions).toHaveAttribute("aria-current", "page");
+    expect(subscriptions).toHaveClass("bg-[var(--sidebar-active)]");
+    expect(screen.getByTestId("new-chat-button")).not.toHaveClass("bg-[var(--sidebar-active)]");
+  });
+
   it("hides Canvas navigation while the release feature is off", () => {
     mockConversations(THREE_TYPE_CONVERSATIONS);
     renderSidebar(true, "/canvas");

@@ -69,7 +69,8 @@ export type FeatureKey =
   | "grid_sessions_display_ui"
   | "automations_v2"
   | "splittable_terminal_view_ui"
-  | "shims_page";
+  | "shims_page"
+  | "subscriptions_page";
 
 /** Deployment-wide release-feature values advertised by the server. */
 export type FeatureValues = Record<string, boolean>;

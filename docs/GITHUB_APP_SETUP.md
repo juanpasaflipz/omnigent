@@ -105,8 +105,10 @@ Under **Repository permissions**, set only what sandboxes need:
 | **Contents** | **Read and write** | Clone repos, and push branches for PRs. Use **Read-only** if sandboxes should only clone. |
 | **Metadata** | **Read-only** (mandatory) | Auto-selected; required by GitHub. |
 | **Pull requests** | **Read and write** | Open PRs from the sandbox and surface "PRs opened this session". **Read-only** if you never create PRs. |
+| **Webhooks** | **Read and write** | Optional. Lets **Subscriptions → Connect a repository** and **Start a software factory** in the web UI register the subscription webhook on a repository for the user (see [Webhook for subscriptions](#webhook-for-subscriptions)). Without it those buttons answer that GitHub refused to manage webhooks. |
 
-Leave everything else **No access**. No **Account** or **Organization**
+Leave everything else **No access** (**Webhooks** is only needed for the web UI's
+repository connect flow). No **Account** or **Organization**
 permissions are needed. The user-to-server token inherits exactly these scopes,
 so this list is the ceiling on what a connected sandbox can do as the user.
 
@@ -262,6 +264,28 @@ installed on, so you do not have to add a webhook to each repository by hand.
    `{"matched": 0, "delivered": 0, "suppressed": 0}` means the signature
    verified and nothing was subscribed yet; `401` means the secret does not
    match; `404` means the server is not running with the `subscriptions` flag.
+
+### Per-repository webhooks from the web UI
+
+Instead of the App-level webhook above, users can connect one repository at a
+time from the web UI (**Subscriptions → Connect a repository**, or **Start a
+software factory**). The server then creates a repository webhook pointing at
+its own `/v1/events/github` with `OMNIGENT_GITHUB_WEBHOOK_SECRET`, using the
+user's connection token. That needs:
+
+- the **Webhooks: Read and write** repository permission from
+  [Step 4](#step-4--permissions) (existing installations must accept the new
+  permission, as in step 5 above),
+- the App installed on the repository's owner, and admin access to the
+  repository for the user,
+- `OMNIGENT_GITHUB_WEBHOOK_SECRET` set on the server, and a public server URL
+  (`OMNIGENT_ACCOUNTS_BASE_URL`, `OMNIGENT_DOMAIN` or a PaaS domain such as
+  `RAILWAY_PUBLIC_DOMAIN`); a server only reachable on `localhost` cannot
+  receive GitHub deliveries.
+
+Use one approach per repository: with both an App webhook and a repository
+webhook, each event is delivered twice (the per-subscription cooldown absorbs
+most duplicates).
 
 How the payloads are normalized into a `kind` and `fields`, and how an agent
 subscribes to them, is in [SUBSCRIPTIONS.md](SUBSCRIPTIONS.md).

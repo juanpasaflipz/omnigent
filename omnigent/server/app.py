@@ -3619,6 +3619,35 @@ def create_app(
                 prefix="/v1",
                 tags=["subscriptions"],
             )
+            # Connect a repository's webhook and the one-click factory
+            # template; both act with the caller's GitHub connection.
+            from omnigent.server.routes.subscriptions_github import (
+                create_subscriptions_github_router,
+            )
+            from omnigent.server.routes.templates import create_templates_router
+
+            app.include_router(
+                create_subscriptions_github_router(
+                    auth_provider=auth_provider,
+                    github_store=app.state.github_store,
+                    github_client=app.state.github_client,
+                ),
+                prefix="/v1",
+                tags=["subscriptions"],
+            )
+            app.include_router(
+                create_templates_router(
+                    subscription_store=subscription_store,
+                    agent_store=agent_store,
+                    agent_cache=agent_cache,
+                    artifact_store=artifact_store,
+                    auth_provider=auth_provider,
+                    github_store=app.state.github_store,
+                    github_client=app.state.github_client,
+                ),
+                prefix="/v1",
+                tags=["templates"],
+            )
     # Admin control for the server-wide sharing settings. Always mounted (the
     # handlers self-gate on admin); PUT is a no-op-reject unless this server
     # resolves the setting from the editable file-backed default.
