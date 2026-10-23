@@ -111,3 +111,63 @@ def test_null_refresh_token(db_uri: str) -> None:
     conn = store.get("alice", with_tokens=True)
     assert conn is not None
     assert conn.refresh_token is None
+
+
+_CREDENTIAL_BACKEND_ENV = (
+    "OMNIGENT_CREDENTIAL_CIPHER",
+    "OMNIGENT_CREDENTIAL_ENC_KEY",
+    "OMNIGENT_CREDENTIAL_ENC_KEYS_PREVIOUS",
+    "OMNIGENT_CREDENTIAL_KMS_KEY_ID",
+    "OMNIGENT_CREDENTIAL_VAULT_KEY",
+)
+
+
+def _github_app_env(monkeypatch) -> None:
+    from omnigent.server.github_app import GitHubAppConfig
+
+    for name in _CREDENTIAL_BACKEND_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OMNIGENT_GITHUB_APP_CLIENT_ID", "Iv1abc")
+    monkeypatch.setenv("OMNIGENT_GITHUB_APP_CLIENT_SECRET", "shh")
+    monkeypatch.setenv("OMNIGENT_GITHUB_APP_REDIRECT_URI", "https://x/cb")
+    assert GitHubAppConfig.from_env() is not None
+
+
+def test_server_wiring_uses_a_local_key(db_uri: str, monkeypatch) -> None:
+    """``OMNIGENT_CREDENTIAL_ENC_KEY`` alone enables Connect GitHub (no KMS/Vault)."""
+    import base64
+    import os
+
+    import sqlalchemy as sa
+
+    from omnigent.connections.github import build_github_connection_store
+    from omnigent.db.utils import get_or_create_engine
+
+    _github_app_env(monkeypatch)
+    monkeypatch.setenv("OMNIGENT_CREDENTIAL_ENC_KEY", base64.b64encode(os.urandom(32)).decode())
+
+    store = build_github_connection_store(db_uri)
+    assert store is not None
+    store.upsert("alice", github_login="alice", github_user_id=7, tokens=_tokens("ghu_live"))
+    with get_or_create_engine(db_uri).connect() as connection:
+        stored = connection.execute(sa.text("SELECT secret_enc FROM connections")).scalar_one()
+    assert stored.startswith("env1:local:") and "ghu_live" not in stored
+    full = store.get("alice", with_tokens=True)
+    assert full is not None and full.access_token == "ghu_live"
+
+
+def test_server_wiring_without_a_backend_names_the_options(
+    db_uri: str, monkeypatch, caplog
+) -> None:
+    from omnigent.connections.github import build_github_connection_store
+
+    _github_app_env(monkeypatch)
+    assert build_github_connection_store(db_uri) is None
+    assert "GitHub App is configured but disabled" in caplog.text
+    for option in (
+        "OMNIGENT_CREDENTIAL_ENC_KEY",
+        "openssl rand -base64 32",
+        "OMNIGENT_CREDENTIAL_KMS_KEY_ID",
+        "OMNIGENT_CREDENTIAL_VAULT_KEY",
+    ):
+        assert option in caplog.text

@@ -2100,6 +2100,7 @@ _CLICK_SUBCOMMANDS: frozenset[str] = frozenset(
         "codex",
         "config",
         "copilot",
+        "credentials",
         "cursor",
         "debby",
         "debug",
@@ -4845,18 +4846,9 @@ def server(
     github_config = GitHubAppConfig.from_env()
     github_store = None
     if github_config is not None:
-        from omnigent.stores.credential_store import build_secret_cipher
+        from omnigent.connections.github import build_github_connection_store
 
-        cipher = build_secret_cipher()
-        if cipher is None:
-            logging.getLogger(__name__).error(
-                "GitHub App is configured but disabled: set OMNIGENT_CREDENTIAL_ENC_KEY "
-                "(the credential store's encryption key) to enable it."
-            )
-        else:
-            from omnigent.connections.github import GithubConnectionStore
-
-            github_store = GithubConnectionStore(db_uri, cipher)
+        github_store = build_github_connection_store(db_uri)
 
     # Databricks Connect (per-user OAuth U2M). Shares the credential store's
     # cipher; inert unless OMNIGENT_DATABRICKS_CLIENT_ID/_SECRET are set.
@@ -4865,15 +4857,10 @@ def server(
     databricks_config = DatabricksConfig.from_env()
     databricks_store = None
     if databricks_config is not None:
-        from omnigent.stores.credential_store import build_secret_cipher
+        from omnigent.stores.credential_store.secret_cipher import build_integration_cipher
 
-        dbx_cipher = build_secret_cipher()
-        if dbx_cipher is None:
-            logging.getLogger(__name__).error(
-                "Databricks Connect is configured but disabled: set the credential "
-                "store's KMS key (OMNIGENT_CREDENTIAL_KMS_KEY_ID) to enable it."
-            )
-        else:
+        dbx_cipher = build_integration_cipher("Databricks Connect")
+        if dbx_cipher is not None:
             from omnigent.connections.databricks import DatabricksConnectionStore
 
             databricks_store = DatabricksConnectionStore(db_uri, dbx_cipher)
@@ -11780,6 +11767,87 @@ def _integration_state_dir() -> Path:
 
 def _slack_daemon() -> IntegrationDaemon:
     return IntegrationDaemon("slack", _integration_state_dir())
+
+
+@cli.group("credentials", invoke_without_command=True)
+@click.pass_context
+def credentials(ctx: click.Context) -> None:
+    """Manage the server's encrypted credential store (operators only)."""
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+
+@credentials.command("rewrap")
+@click.option(
+    "--database-uri",
+    default=None,
+    help="Server database URI.  [default: $DATABASE_URL, else the local server's database]",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Report what would be re-encrypted without writing anything.",
+)
+def credentials_rewrap(database_uri: str | None, dry_run: bool) -> None:
+    """Re-encrypt stored credentials under the current backend and key.
+
+    Run after rotating OMNIGENT_CREDENTIAL_ENC_KEY (old key moved to
+    OMNIGENT_CREDENTIAL_ENC_KEYS_PREVIOUS) or switching backend, with the same
+    credential env as the server. Safe to rerun: rows already on the current key
+    are left alone, and a row that cannot be read is reported and skipped.
+
+    :param database_uri: Database URI override, e.g. ``"sqlite:///chat.db"``.
+    :param dry_run: Count without writing when ``True``.
+    """
+    from omnigent.db.utils import normalize_database_url
+    from omnigent.stores.credential_store.rewrap import rewrap_credentials
+    from omnigent.stores.credential_store.secret_cipher import (
+        CREDENTIAL_BACKEND_SETUP_HINT,
+        build_secret_cipher,
+    )
+
+    db_uri = database_uri or os.environ.get("DATABASE_URL", "").strip() or _default_db_uri()
+    try:
+        cipher = build_secret_cipher()
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    if cipher is None:
+        raise click.ClickException(
+            f"No credential store backend: {CREDENTIAL_BACKEND_SETUP_HINT}."
+        )
+    try:
+        report = rewrap_credentials(
+            normalize_database_url(db_uri),
+            cipher,
+            dry_run=dry_run,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+
+    verb = "would rewrap" if dry_run else "rewrapped"
+    click.echo(f"Target key: {report.target}")
+    click.echo(
+        f"Scanned {report.scanned}: {report.current} already current, {verb} "
+        f"{report.rewrapped}, {len(report.failures)} failed"
+        + (
+            f", {report.skipped_concurrent} changed concurrently"
+            if report.skipped_concurrent
+            else ""
+        )
+    )
+    for provider, count in sorted(report.by_provider.items()):
+        click.echo(f"  store {provider}: {count}")
+    for source, count in sorted(report.by_source_key.items()):
+        click.echo(f"  from {source}: {count}")
+    for failure in report.failures:
+        click.echo(
+            f"  FAILED {failure.provider} user={failure.user_id} "
+            f"workspace={failure.workspace_id}: {failure.reason}",
+            err=True,
+        )
+    if report.failures:
+        raise SystemExit(1)
 
 
 @cli.group("integration", invoke_without_command=True)

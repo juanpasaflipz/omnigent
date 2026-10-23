@@ -44,6 +44,13 @@ import logging
 import os
 from typing import Any
 
+from omnigent.stores.credential_store.envelope import (
+    VAULT_BACKEND,
+    CiphertextOrigin,
+    ciphertext_backend,
+    foreign_backend_error,
+    is_envelope,
+)
 from omnigent.stores.credential_store.secret_cipher import SecretContext
 
 _logger = logging.getLogger(__name__)
@@ -133,12 +140,19 @@ class VaultSecretCipher:
         so importing this module never requires hvac or a Vault connection.
     """
 
+    backend = VAULT_BACKEND
+
     def __init__(
         self, key_name: str, *, mount_point: str = "transit", client: Any | None = None
     ) -> None:
         self._key = key_name
         self._mount = mount_point
         self._client = client
+
+    @property
+    def write_origin(self) -> CiphertextOrigin:
+        """Backend and key name new writes use."""
+        return CiphertextOrigin(VAULT_BACKEND, self._key)
 
     @property
     def _vault(self) -> Any:
@@ -181,6 +195,9 @@ class VaultSecretCipher:
         overwrite recoverable ciphertext. Residual gap: a key deleted and recreated
         under the *same* name reads as per-row.
         """
+        if is_envelope(ciphertext):
+            # A local/KMS envelope: store-wide (backend switched), not a per-row failure.
+            raise foreign_backend_error(ciphertext_backend(ciphertext), VAULT_BACKEND)
         client = self._vault  # trigger the friendly hvac ImportError before importing exceptions
         import hvac.exceptions as vexc
 

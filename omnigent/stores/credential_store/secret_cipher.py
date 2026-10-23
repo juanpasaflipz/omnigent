@@ -1,18 +1,20 @@
-"""AWS KMS-backed encryption for integration secrets stored at rest.
+"""Encryption for integration secrets stored at rest.
 
-Integration credentials (GitHub App tokens today; MCP connector secrets later)
-are encrypted before they touch the database. Encryption is delegated to AWS
-KMS: the key material never leaves KMS, and the server holds only an IAM
-permission to call ``Encrypt``/``Decrypt`` (granted via IRSA — no key or master
-secret lives in the process or its environment). Each secret is bound to its
-row's identity — ``(workspace_id, user_id, provider, account_id)`` — passed as
-the KMS *encryption context*, so a ciphertext can only be decrypted by
-presenting the same identity. That is per-user encryption enforced by KMS, not
-by a key the server derives, and there is no global-key path.
+Integration credentials (GitHub App tokens, Databricks and MCP grants) are
+encrypted before they touch the database, behind the :class:`SecretCipher`
+port. Three backends implement it:
 
-A deployment selects the key with ``OMNIGENT_CREDENTIAL_KMS_KEY_ID``; unset ⇒
-the credential store, and every integration built on it, is disabled. There is
-no non-KMS fallback. See ``designs/CREDENTIAL_STORE.md``.
+- ``local`` (:mod:`.local_cipher`): AES-256-GCM envelope encryption under a
+  master key from ``OMNIGENT_CREDENTIAL_ENC_KEY``. The self-hosting default.
+- ``kms`` (:class:`KmsSecretCipher`): the same envelope, with the data key
+  generated and wrapped by AWS KMS (``OMNIGENT_CREDENTIAL_KMS_KEY_ID``).
+- ``vault`` (:mod:`.vault_cipher`): HashiCorp Vault Transit.
+
+Each secret is bound to its row's identity —
+``(workspace_id, user_id, provider, account_id)`` — so a ciphertext only
+decrypts for the row it was written for. No configured backend ⇒ the store,
+and every integration built on it, is disabled; there is never a plaintext
+fallback. See ``designs/CREDENTIAL_STORE.md``.
 """
 
 from __future__ import annotations
@@ -22,6 +24,17 @@ import logging
 import os
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol, runtime_checkable
+
+from omnigent.stores.credential_store.envelope import (
+    KMS_BACKEND,
+    CiphertextOrigin,
+    ciphertext_backend,
+    foreign_backend_error,
+    is_envelope,
+    open_sealed,
+    parse_envelope,
+    seal,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -35,7 +48,7 @@ SecretContext = Mapping[str, str]
 CREDENTIAL_KMS_KEY_ENV_VAR = "OMNIGENT_CREDENTIAL_KMS_KEY_ID"
 
 #: Optional explicit backend selector for the credential store's cipher
-#: (``kms`` | ``vault``). Set it to pick a backend per server; its key env var is
+#: (``local`` | ``kms`` | ``vault``). Set it to pick a backend per server; its key env var is
 #: then required. Unset ⇒ the single configured backend is auto-detected, and
 #: configuring more than one without this selector is an error.
 CREDENTIAL_CIPHER_ENV_VAR = "OMNIGENT_CREDENTIAL_CIPHER"
@@ -45,6 +58,14 @@ CREDENTIAL_CIPHER_ENV_VAR = "OMNIGENT_CREDENTIAL_CIPHER"
 #: These degrade to "reconnect" (``decrypt`` → ``None``); anything else
 #: (AccessDenied, disabled key, throttling) is operational and propagates.
 _SOFT_FAIL_KMS_CODES = frozenset({"InvalidCiphertextException", "IncorrectKeyException"})
+
+
+#: Operator-facing list of the ways to enable the credential store.
+CREDENTIAL_BACKEND_SETUP_HINT = (
+    "set OMNIGENT_CREDENTIAL_ENC_KEY to a local key (generate one with "
+    "`openssl rand -base64 32`), or configure AWS KMS (OMNIGENT_CREDENTIAL_KMS_KEY_ID) "
+    "or Vault Transit (OMNIGENT_CREDENTIAL_VAULT_KEY)"
+)
 
 
 class SecretTooLargeError(ValueError):
@@ -74,6 +95,56 @@ class SecretCipher(Protocol):
         ...
 
 
+@runtime_checkable
+class RewrappableSecretCipher(SecretCipher, Protocol):
+    """A :class:`SecretCipher` that reports which backend and key it writes with.
+
+    ``omnigent credentials rewrap`` compares this against each stored value's
+    origin (:func:`~.envelope.describe_ciphertext`) to find values to re-encrypt.
+    """
+
+    @property
+    def write_origin(self) -> CiphertextOrigin | None:
+        """Backend and key id of new writes; ``None`` for a read-only cipher."""
+        ...
+
+
+class MultiBackendSecretCipher:
+    """Writes with one backend and reads values from any configured backend.
+
+    Used while migrating between backends (for example local → KMS with the old
+    local key kept in ``OMNIGENT_CREDENTIAL_ENC_KEYS_PREVIOUS``): decrypt routes
+    each value by its prefix, so rows not yet rewrapped keep working.
+
+    :param writer: Cipher for every encrypt, and for values in its own format.
+    :param writer_backend: The writer's backend name (``local``/``kms``/``vault``).
+    :param readers: Other configured backends, by name, used for decrypt only.
+    """
+
+    def __init__(
+        self,
+        writer: SecretCipher,
+        writer_backend: str,
+        readers: Mapping[str, SecretCipher],
+    ) -> None:
+        self.writer = writer
+        self._backends = {**readers, writer_backend: writer}
+
+    @property
+    def write_origin(self) -> CiphertextOrigin | None:
+        return getattr(self.writer, "write_origin", None)
+
+    def encrypt(self, plaintext: str, *, context: SecretContext) -> str:
+        return self.writer.encrypt(plaintext, context=context)
+
+    def decrypt(self, ciphertext: str, *, context: SecretContext) -> str | None:
+        backend = ciphertext_backend(ciphertext)
+        cipher = self._backends.get(backend)
+        if cipher is None:
+            raise foreign_backend_error(backend, ", ".join(sorted(self._backends)))
+        return cipher.decrypt(ciphertext, context=context)
+
+
 def build_kms_secret_cipher() -> KmsSecretCipher | None:
     """Build the AWS KMS cipher from ``OMNIGENT_CREDENTIAL_KMS_KEY_ID``, or ``None``.
 
@@ -88,23 +159,37 @@ def build_kms_secret_cipher() -> KmsSecretCipher | None:
 def build_secret_cipher() -> SecretCipher | None:
     """Construct the credential store's cipher from deployment config, or ``None``.
 
-    The backend is configurable per server. Set ``OMNIGENT_CREDENTIAL_CIPHER`` to
-    choose one explicitly (``kms`` or ``vault``); its key env var
-    (``OMNIGENT_CREDENTIAL_KMS_KEY_ID`` / ``OMNIGENT_CREDENTIAL_VAULT_KEY``) is then
-    required, and a mismatch raises rather than silently disabling the store. When
-    the selector is unset, the single configured backend is auto-detected as a
-    zero-config convenience; configuring more than one without a selector is an
-    error (no silent precedence), and configuring none disables the store
-    (``None`` — the caller decides how to surface that). Adding a backend is a new
-    registry entry, not a new branch. See ``designs/CREDENTIAL_STORE.md``.
+    Set ``OMNIGENT_CREDENTIAL_CIPHER`` (``local``, ``kms`` or ``vault``) to choose
+    the write backend explicitly; its key env var (``OMNIGENT_CREDENTIAL_ENC_KEY``
+    / ``OMNIGENT_CREDENTIAL_KMS_KEY_ID`` / ``OMNIGENT_CREDENTIAL_VAULT_KEY``) is then
+    required. When the selector is unset, the single configured backend is
+    auto-detected; configuring more than one without a selector is an error, and
+    configuring none disables the store (``None``).
+
+    Other backends whose key material is also configured (including local keys
+    listed only in ``OMNIGENT_CREDENTIAL_ENC_KEYS_PREVIOUS``) are added as
+    decrypt-only readers, so values written before a backend switch stay readable
+    until ``omnigent credentials rewrap`` re-encrypts them.
+
+    :raises ValueError: On an unknown selector, a selected backend without its
+        key, an ambiguous configuration, or a malformed local key.
     """
     # hvac / boto3 stay optional: each builder only reads env and constructs, so
     # importing and calling them here pulls no SDK and makes no network call.
+    from omnigent.stores.credential_store.local_cipher import (
+        build_local_secret_cipher,
+        build_local_secret_reader,
+    )
     from omnigent.stores.credential_store.vault_cipher import build_vault_secret_cipher
 
     builders: dict[str, Callable[[], SecretCipher | None]] = {
         "kms": build_kms_secret_cipher,
+        "local": build_local_secret_cipher,
         "vault": build_vault_secret_cipher,
+    }
+    reader_builders: dict[str, Callable[[], SecretCipher | None]] = {
+        **builders,
+        "local": build_local_secret_reader,
     }
 
     selected = os.environ.get(CREDENTIAL_CIPHER_ENV_VAR, "").strip().lower()
@@ -115,22 +200,45 @@ def build_secret_cipher() -> SecretCipher | None:
                 f"{CREDENTIAL_CIPHER_ENV_VAR}={selected!r} is not a known credential "
                 f"backend; expected one of {sorted(builders)}."
             )
-        cipher = builder()
-        if cipher is None:
+        writer = builder()
+        if writer is None:
             raise ValueError(
                 f"{CREDENTIAL_CIPHER_ENV_VAR}={selected!r} but its key is unset — "
                 "set the backend's key env var."
             )
-        return cipher
+    else:
+        configured = {name: c for name, build in builders.items() if (c := build()) is not None}
+        if len(configured) > 1:
+            raise ValueError(
+                f"multiple credential backends are configured ({sorted(configured)}); "
+                f"set {CREDENTIAL_CIPHER_ENV_VAR} to choose one."
+            )
+        if not configured:
+            return None
+        ((selected, writer),) = configured.items()
 
-    # No explicit selector: use the single configured backend, or None if none.
-    configured = {name: c for name, build in builders.items() if (c := build()) is not None}
-    if len(configured) > 1:
-        raise ValueError(
-            f"multiple credential backends are configured ({sorted(configured)}); "
-            f"set {CREDENTIAL_CIPHER_ENV_VAR} to choose one."
+    readers = {
+        name: reader
+        for name, build in reader_builders.items()
+        if name != selected and (reader := build()) is not None
+    }
+    return MultiBackendSecretCipher(writer, selected, readers) if readers else writer
+
+
+def build_integration_cipher(integration: str) -> SecretCipher | None:
+    """:func:`build_secret_cipher` for a configured integration, logging if none.
+
+    :param integration: Name for the log line, e.g. ``"GitHub App"``.
+    :returns: The cipher, or ``None`` (after logging how to enable one).
+    """
+    cipher = build_secret_cipher()
+    if cipher is None:
+        _logger.error(
+            "%s is configured but disabled: no credential store backend; %s.",
+            integration,
+            CREDENTIAL_BACKEND_SETUP_HINT,
         )
-    return next(iter(configured.values()), None)
+    return cipher
 
 
 def _kms_context(context: SecretContext) -> dict[str, str]:
@@ -145,19 +253,22 @@ def _kms_context(context: SecretContext) -> dict[str, str]:
 
 
 class KmsSecretCipher:
-    """:class:`SecretCipher` backed by AWS KMS direct encrypt/decrypt.
+    """:class:`SecretCipher` backed by AWS KMS envelope encryption.
 
-    Each secret is a single ``kms:Encrypt`` call under ``key_id`` with the row
-    identity as the encryption context; the ciphertext blob is stored base64.
-    Serialized secrets must fit the 4096-byte KMS ``Encrypt`` limit. Larger
-    credentials require another backend, such as Vault Transit. The KMS client
-    is created lazily so importing this module never requires boto3 or AWS
-    credentials — only constructing the cipher (which only happens when a key is
-    configured) does.
+    Each write calls ``kms:GenerateDataKey`` under ``key_id`` with the row
+    identity as the encryption context, encrypts the secret locally with the
+    returned AES-256 data key (AES-GCM, identity bound as associated data), and
+    stores only the KMS-wrapped data key beside it in the ``env1:kms:`` envelope
+    (see :mod:`.envelope`). Decrypt sends just the wrapped data key to
+    ``kms:Decrypt``. Values written by the earlier direct ``kms:Encrypt`` code
+    (plain base64 blobs) still decrypt. The KMS client is created lazily so
+    importing this module never requires boto3 or AWS credentials.
 
     :param key_id: KMS key id, ARN, or ``alias/…``.
     :param client: Optional pre-built boto3 KMS client (tests inject a fake).
     """
+
+    backend = KMS_BACKEND
 
     def __init__(self, key_id: str, *, client: Any | None = None) -> None:
         self._key_id = key_id
@@ -177,19 +288,25 @@ class KmsSecretCipher:
             self._client = boto3.client("kms")
         return self._client
 
+    @property
+    def write_origin(self) -> CiphertextOrigin:
+        """Backend and key id new writes use."""
+        return CiphertextOrigin(KMS_BACKEND, self._key_id)
+
     def encrypt(self, plaintext: str, *, context: SecretContext) -> str:
-        encoded = plaintext.encode("utf-8")
-        if len(encoded) > 4096:
-            raise SecretTooLargeError(
-                "Credential exceeds the KMS limit of 4096 serialized bytes. "
-                "Ask your administrator to configure Vault Transit for larger credentials."
-            )
-        response = self._kms.encrypt(
+        response = self._kms.generate_data_key(
             KeyId=self._key_id,
-            Plaintext=encoded,
+            KeySpec="AES_256",
             EncryptionContext=_kms_context(context),
         )
-        return base64.b64encode(response["CiphertextBlob"]).decode("ascii")
+        return seal(
+            plaintext,
+            backend=KMS_BACKEND,
+            key_id=self._key_id,
+            wrapped_key=response["CiphertextBlob"],
+            data_key=response["Plaintext"],
+            context=context,
+        )
 
     def decrypt(self, ciphertext: str, *, context: SecretContext) -> str | None:
         """Return the plaintext for *ciphertext*, or ``None`` if unreadable.
@@ -198,23 +315,53 @@ class KmsSecretCipher:
         under a different key/context or is corrupt, so a rotated key degrades
         to "reconnect" instead of a 500. Operational failures (access denied,
         disabled key, throttling) propagate — telling the user to reconnect
-        wouldn't help and would hide a misconfiguration.
+        wouldn't help and would hide a misconfiguration. A value from another
+        backend raises :class:`EnvelopeKeyError`.
         """
-        from botocore.exceptions import ClientError
+        backend = ciphertext_backend(ciphertext)
+        if backend != KMS_BACKEND:
+            raise foreign_backend_error(backend, KMS_BACKEND)
+        if not is_envelope(ciphertext):
+            return self._decrypt_legacy(ciphertext, context)
+        envelope = parse_envelope(ciphertext)
+        if envelope is None:
+            _logger.warning(
+                "kms credential cipher: stored value is not a valid envelope (corrupt) — "
+                "the affected integration will read as disconnected until reconnected"
+            )
+            return None
+        data_key = self._kms_decrypt(envelope.wrapped_key, context, key_id=envelope.key_id)
+        if data_key is None:
+            return None
+        plaintext = open_sealed(envelope, data_key, context)
+        if plaintext is None:
+            _logger.warning(
+                "kms credential cipher: payload failed authentication (tampered or wrong "
+                "row) — the affected integration will read as disconnected until reconnected"
+            )
+        return plaintext
 
+    def _decrypt_legacy(self, ciphertext: str, context: SecretContext) -> str | None:
+        """Read a value written by direct ``kms:Encrypt`` (plain base64 blob)."""
         try:
             blob = base64.b64decode(ciphertext.encode("ascii"), validate=True)
-        except ValueError:
+        except (ValueError, UnicodeEncodeError):
             _logger.warning(
                 "secretbox: stored ciphertext is not valid base64 (corrupt) — "
                 "the affected integration will read as disconnected until reconnected"
             )
             return None
+        plaintext = self._kms_decrypt(blob, context, key_id=self._key_id)
+        return plaintext.decode("utf-8") if plaintext is not None else None
+
+    def _kms_decrypt(self, blob: bytes, context: SecretContext, *, key_id: str) -> bytes | None:
+        from botocore.exceptions import ClientError
+
         try:
             response = self._kms.decrypt(
                 CiphertextBlob=blob,
                 EncryptionContext=_kms_context(context),
-                KeyId=self._key_id,
+                KeyId=key_id,
             )
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
@@ -227,4 +374,4 @@ class KmsSecretCipher:
                 )
                 return None
             raise
-        return response["Plaintext"].decode("utf-8")
+        return bytes(response["Plaintext"])

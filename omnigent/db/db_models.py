@@ -428,8 +428,8 @@ class SqlConnection(OmnigentBase):
     broker that vends the secret to managed sandboxes on demand.
 
     The secret material is stored as one encrypted JSON blob
-    (:attr:`secret_enc`, AWS KMS ciphertext via
-    :class:`omnigent.stores.credential_store.secret_cipher.KmsSecretCipher`)
+    (:attr:`secret_enc`, cipher output from the configured
+    :class:`omnigent.stores.credential_store.secret_cipher.SecretCipher`)
     so any provider's secret shape fits without a schema change — plaintext
     never touches the database.
     Non-secret provider metadata (login, ids, scopes, expiries) lives in
@@ -462,8 +462,8 @@ class SqlConnection(OmnigentBase):
     account_id: Mapped[str] = mapped_column(
         String(128), primary_key=True, nullable=False, server_default=""
     )
-    # Both plain Text, deliberately (not CompressedText): secret_enc is KMS
-    # ciphertext (base64) — high-entropy, so compression buys nothing — and
+    # Both plain Text, deliberately (not CompressedText): secret_enc is cipher
+    # output (base64 fields) — high-entropy, so compression buys nothing — and
     # metadata_json is a small fixed set of provider fields (login, ids, scopes,
     # expiries), far below the size where zstd's framing overhead pays off.
     # Neither is filtered or pattern-matched in SQL.

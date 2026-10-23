@@ -456,33 +456,19 @@ def build_app(resolved_config: _ResolvedConfig | None = None) -> _BuiltApp:
     github_config = GitHubAppConfig.from_env()
     github_store = None
     if github_config is not None:
-        from omnigent.stores.credential_store import build_secret_cipher
+        from omnigent.connections.github import build_github_connection_store
 
-        cipher = build_secret_cipher()
-        if cipher is None:
-            logger.error(
-                "GitHub App is configured but disabled: set OMNIGENT_CREDENTIAL_ENC_KEY "
-                "(the credential store's encryption key) to enable it."
-            )
-        else:
-            from omnigent.connections.github import GithubConnectionStore
-
-            github_store = GithubConnectionStore(database_url, cipher)
+        github_store = build_github_connection_store(database_url)
 
     from omnigent.server.databricks_app import DatabricksConfig
 
     databricks_config = DatabricksConfig.from_env()
     databricks_store = None
     if databricks_config is not None:
-        from omnigent.stores.credential_store import build_secret_cipher
+        from omnigent.stores.credential_store.secret_cipher import build_integration_cipher
 
-        dbx_cipher = build_secret_cipher()
-        if dbx_cipher is None:
-            logger.error(
-                "Databricks Connect is configured but disabled: set the credential "
-                "store's KMS key (OMNIGENT_CREDENTIAL_KMS_KEY_ID) to enable it."
-            )
-        else:
+        dbx_cipher = build_integration_cipher("Databricks Connect")
+        if dbx_cipher is not None:
             from omnigent.connections.databricks import DatabricksConnectionStore
 
             databricks_store = DatabricksConnectionStore(database_url, dbx_cipher)
