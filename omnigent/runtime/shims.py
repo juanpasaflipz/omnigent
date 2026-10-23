@@ -113,7 +113,10 @@ class _FiringRecord:
 _UNKNOWN_MODEL = "unknown"
 
 _lock = threading.Lock()
+# Keyed by code-defined shim names; firing counts are process telemetry, not tenant data.
+# custom-lint: disable-next=workspace-scoped-cache -- shim names are global constants
 _registry: dict[str, Shim] = {}
+# custom-lint: disable-next=workspace-scoped-cache -- keyed by global shim name
 _records: dict[str, _FiringRecord] = {}
 
 

@@ -3439,7 +3439,7 @@ def create_app(
     # Shim registry report (designs/HARNESS_FLYWHEEL.md section 3): which
     # deterministic model-gap patches still fire, for the shim-janitor automation.
     app.include_router(
-        create_shims_router(auth_provider=auth_provider),
+        create_shims_router(auth_provider=auth_provider, permission_store=permission_store),
         prefix="/v1",
         tags=["shims"],
     )

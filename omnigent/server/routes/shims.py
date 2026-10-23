@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 
 from omnigent.runtime.shims import ShimStatus, snapshot
 from omnigent.server.auth import AuthProvider
-from omnigent.server.routes._auth_helpers import require_user
+from omnigent.server.routes._auth_helpers import require_admin
+from omnigent.stores.permission_store import PermissionStore
 
 _logger = logging.getLogger(__name__)
 
@@ -96,12 +97,19 @@ def _build_shim_report(idle_days: int) -> ShimReport:
     )
 
 
-def create_shims_router(*, auth_provider: AuthProvider | None = None) -> APIRouter:
+def create_shims_router(
+    *,
+    auth_provider: AuthProvider | None = None,
+    permission_store: PermissionStore | None = None,
+) -> APIRouter:
     """
     Create the shim registry report router.
 
     :param auth_provider: Auth provider for user identity. ``None`` disables
         auth (single-user / local mode).
+    :param permission_store: Permission store for the admin check. Firing
+        counts are process-wide and span every workspace, so the report is
+        admin-only in multi-user deployments.
     :returns: The configured router (mounted under ``/v1``).
     """
     router = APIRouter()
@@ -118,7 +126,9 @@ def create_shims_router(*, auth_provider: AuthProvider | None = None) -> APIRout
         :param idle_days: Days without a firing after which a shim is retirable.
         :returns: The shim report.
         """
-        require_user(request, auth_provider)
+        await require_admin(
+            request, auth_provider, permission_store, action="read the shim registry"
+        )
         return await asyncio.to_thread(_build_shim_report, idle_days)
 
     return router

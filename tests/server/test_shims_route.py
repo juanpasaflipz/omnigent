@@ -49,7 +49,20 @@ def _isolated_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Itera
         register_shim(**asdict(shim))
 
 
-def _client(auth_provider: AuthProvider | None = None) -> TestClient:
+class _AdminList:
+    """Permission-store stand-in whose admins are a fixed set of user ids."""
+
+    def __init__(self, admins: set[str]) -> None:
+        self._admins = admins
+
+    def is_admin(self, user_id: str) -> bool:
+        return user_id in self._admins
+
+
+def _client(
+    auth_provider: AuthProvider | None = None,
+    permission_store: _AdminList | None = None,
+) -> TestClient:
     """
     Mount the shims router on a bare app.
 
@@ -57,7 +70,13 @@ def _client(auth_provider: AuthProvider | None = None) -> TestClient:
     :returns: A test client for the app.
     """
     app = FastAPI()
-    app.include_router(create_shims_router(auth_provider=auth_provider), prefix="/v1")
+    app.include_router(
+        create_shims_router(
+            auth_provider=auth_provider,
+            permission_store=permission_store,  # type: ignore[arg-type]
+        ),
+        prefix="/v1",
+    )
     return TestClient(app)
 
 
@@ -149,3 +168,14 @@ def test_get_shims_requires_user_in_multi_user_mode() -> None:
         client.get("/v1/shims")
     assert unauthorized.value.code == ErrorCode.UNAUTHORIZED
     assert client.get("/v1/shims", headers={"x-test-user": "alice"}).status_code == 200
+
+
+def test_multi_user_report_is_admin_only() -> None:
+    """Per-model counts span every workspace, so only admins read them."""
+    client = _client(_HeaderIdentity(), _AdminList({"admin"}))
+    assert client.get("/v1/shims", headers={"x-test-user": "admin"}).status_code == 200
+    # The bare test app has no OmnigentError handler; the 403 surfaces as the exception.
+    with pytest.raises(OmnigentError) as forbidden:
+        client.get("/v1/shims", headers={"x-test-user": "member"})
+    assert forbidden.value.code == ErrorCode.FORBIDDEN
+    assert "read the shim registry" in str(forbidden.value)
