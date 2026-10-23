@@ -33,13 +33,14 @@ railway init --name "$project_name" >/dev/null
 echo "==> Adding Postgres"
 railway add --database postgres >/dev/null
 
-echo "==> Adding the ${service} service from ${repo}@${branch}"
+# Order matters: every variable, secrets included, is in place before the repo
+# is connected, so the first boot already has an admin password. Otherwise the
+# instance could be claimed by its first visitor through POST /auth/setup.
+echo "==> Adding an empty ${service} service"
 # The ${{Postgres.DATABASE_URL}} reference is resolved by Railway, not the shell.
 # shellcheck disable=SC2016
-railway add --service "$service" --repo "$repo" --branch "$branch" \
+railway add --service "$service" \
   --variables 'DATABASE_URL=${{Postgres.DATABASE_URL}}' \
-  --variables "OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD=${admin_password}" \
-  --variables "OMNIGENT_GITHUB_WEBHOOK_SECRET=${webhook_secret}" \
   --variables "OMNIGENT_AUTH_PROVIDER=accounts" \
   --variables "OMNIGENT_ACCOUNTS_AUTO_OPEN=0" \
   --variables "OMNIGENT_DATA_DIR=/data/omnigent" \
@@ -48,8 +49,18 @@ railway add --service "$service" --repo "$repo" --branch "$branch" \
 
 railway service link "$service" >/dev/null
 
+# Secrets go in through stdin: `railway add --variables` echoes every value.
+set_secret() {
+  printf '%s' "$2" | railway variables set "$1" --stdin --service "$service" --skip-deploys >/dev/null
+}
+set_secret OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD "$admin_password"
+set_secret OMNIGENT_GITHUB_WEBHOOK_SECRET "$webhook_secret"
+
 echo "==> Attaching a volume at /data"
 railway volume add --mount-path /data >/dev/null
+
+echo "==> Connecting ${repo}@${branch}; this starts the first build"
+railway service source connect --repo "$repo" --branch "$branch" --service "$service" >/dev/null
 
 echo "==> Generating a public domain"
 railway domain --service "$service"
