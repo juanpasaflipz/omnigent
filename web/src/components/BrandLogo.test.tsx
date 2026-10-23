@@ -84,6 +84,31 @@ describe("BrandLogo", () => {
     expect(authenticatedFetch).not.toHaveBeenCalled();
   });
 
+  it("renders the server-reported WakeVane logo instead of the mascot", () => {
+    getOmnigentHostConfig.mockReturnValue({ fetcher: undefined });
+
+    render(
+      logoTree({
+        branding: {
+          app_name: "WakeVane",
+          heading: "Wake agents. Steer outcomes.",
+          logos: {
+            main: "/v1/branding/logo/main",
+            loading: "/v1/branding/logo/loading",
+            favicon: "/v1/branding/logo/favicon",
+          },
+          powered_by: true,
+        },
+      } as ServerInfo),
+    );
+
+    expect(screen.getByRole("img", { name: "WakeVane" })).toHaveAttribute(
+      "src",
+      "/v1/branding/logo/main",
+    );
+    expect(screen.queryByTestId("otto-eyes")).not.toBeInTheDocument();
+  });
+
   it("falls back to Otto when a standalone image fails to load", () => {
     getOmnigentHostConfig.mockReturnValue({ fetcher: undefined });
     render(logoTree(serverInfo("/v1/branding/logo/missing")));

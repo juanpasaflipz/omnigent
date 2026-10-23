@@ -11,7 +11,7 @@ rendered result.
 Covered: custom app name (browser-tab title + sidebar wordmark), custom hero
 heading, an explicit empty heading that hides the hero line instead of falling
 back to the default, the custom in-app logo and favicon, and the "Powered by
-Omnigent" credit — which appears only when branding is set.
+Omnigent" credit — which the WakeVane distribution shows by default.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ def test_custom_branding_reshapes_the_landing(page: Page, live_server: str) -> N
 
     # Custom hero heading replaces the built-in default.
     expect(page.get_by_role("heading", name="Acme Corp")).to_be_visible()
-    expect(page.get_by_text("What should we build?")).to_have_count(0)
+    expect(page.get_by_text("Wake agents. Steer outcomes.")).to_have_count(0)
 
     # Custom logo renders as an <img> (alt = app name); the favicon points at
     # the branding route.
@@ -94,7 +94,7 @@ def test_empty_heading_hides_the_hero_line(page: Page, live_server: str) -> None
     _open_landing(page, base_url)
 
     # Neither the custom nor the built-in default heading appears.
-    expect(page.get_by_text("What should we build?")).to_have_count(0)
+    expect(page.get_by_text("Wake agents. Steer outcomes.")).to_have_count(0)
     # The landing did load branded (credit present), so this is a real hide.
     expect(page.get_by_test_id("powered-by-omnigent")).to_be_visible()
 
@@ -113,12 +113,12 @@ def test_powered_by_false_hides_the_credit(page: Page, live_server: str) -> None
     expect(page.get_by_test_id("powered-by-omnigent")).to_have_count(0)
 
 
-def test_unbranded_keeps_defaults_and_hides_credit(page: Page, live_server: str) -> None:
-    """With no branding, the UI keeps its defaults and shows no credit."""
+def test_unbranded_keeps_defaults_and_shows_credit(page: Page, live_server: str) -> None:
+    """With no branding, the UI keeps the WakeVane defaults and credits Omnigent."""
     base_url = live_server
     _stub_info(page, None)
     _open_landing(page, base_url)
 
-    expect(page.get_by_role("heading", name="What should we build?")).to_be_visible()
+    expect(page.get_by_role("heading", name="Wake agents. Steer outcomes.")).to_be_visible()
     expect(page.get_by_role("link", name="Omnigent")).to_be_visible()
-    expect(page.get_by_test_id("powered-by-omnigent")).to_have_count(0)
+    expect(page.get_by_test_id("powered-by-omnigent")).to_have_count(1)

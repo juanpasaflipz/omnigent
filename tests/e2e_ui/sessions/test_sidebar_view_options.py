@@ -125,7 +125,7 @@ def test_grouping_and_show_toggles_persist_across_reload(
         .get_by_test_id("session-state-badge")
     )
     expect(running_badge).to_have_attribute("data-state", "running")
-    page.get_by_text("What should we build?", exact=True).hover()
+    page.get_by_text("Wake agents. Steer outcomes.", exact=True).hover()
     assert sockets, "Session updates socket never connected"
     monkeypatch.setitem(_ROWS[0], "status", "idle")
     sockets[-1].send(json.dumps({"type": "changed", "items": [_ROWS[0]]}))
@@ -318,7 +318,7 @@ def test_created_ordering_persists_and_flag_off_uses_updated(
         for route in pending:
             _serve_sessions(route)
     # Leaving the sidebar releases its hover-order freeze.
-    page.get_by_text("What should we build?", exact=True).hover()
+    page.get_by_text("Wake agents. Steer outcomes.", exact=True).hover()
     expect(links).to_have_text(["Idle session (unread)", "Running session", "Awaiting session"])
     assert any("sort_by=updated_at" in url for url in requests)
     page.locator(f'a[href="/c/{_IDLE}"]').click(button="right")

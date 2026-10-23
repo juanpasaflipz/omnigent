@@ -35,6 +35,7 @@ import os
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib import resources
 from io import BytesIO
 from pathlib import Path, PurePath
 from types import MappingProxyType
@@ -376,6 +377,20 @@ def _branding_powered_by(section: Mapping[str, Any]) -> bool:
 
 
 LOGO_VARIANTS: tuple[str, ...] = ("main", "loading", "favicon")
+
+# Distribution defaults (WakeVane, an Apache-2.0 distribution of Omnigent).
+# Every key in an operator ``branding:`` block overrides only that key; logo
+# variants named here are packaged files under ``omnigent/resources/branding``.
+DISTRIBUTION_BRANDING: Mapping[str, Any] = MappingProxyType(
+    {
+        "app_name": "WakeVane",
+        "heading": "Wake agents. Steer outcomes.",
+        "powered_by": True,
+        "logo": MappingProxyType(
+            {"main": "logo.svg", "loading": "loading.svg", "favicon": "favicon.svg"}
+        ),
+    }
+)
 BRANDING_ASSETS_DIRNAME = "branding-assets"
 BRANDING_ASSET_MAX_BYTES = 5 * 1024 * 1024
 BRANDING_ASSET_MAX_DIMENSION = 4096
@@ -677,7 +692,18 @@ def _raster_media_type(path: Path, content: bytes) -> str | None:
     return media_type if _container_ends_at_eof(expected_format, content) else None
 
 
-def _validated_image(path: Path) -> BrandingAsset | None:
+def _packaged_svg_media_type(content: bytes) -> str | None:
+    """Accept a trusted, packaged UTF-8 SVG document (``<svg>...</svg>``)."""
+    try:
+        text = content.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
+    is_svg = text.startswith("<svg") and text.endswith("</svg>")
+    return "image/svg+xml" if is_svg else None
+
+
+def _validated_image(path: Path, *, packaged: bool = False) -> BrandingAsset | None:
+    """Validate a branding image; SVG is accepted only for packaged defaults."""
     try:
         size = path.stat().st_size
         if size <= 0 or size > BRANDING_ASSET_MAX_BYTES:
@@ -687,7 +713,10 @@ def _validated_image(path: Path) -> BrandingAsset | None:
         return None
     if len(content) != size:
         return None
-    media_type = _raster_media_type(path, content)
+    if packaged and path.suffix.lower() == ".svg":
+        media_type = _packaged_svg_media_type(content)
+    else:
+        media_type = _raster_media_type(path, content)
     if media_type is None:
         return None
     return BrandingAsset(path=path, media_type=media_type, content=content)
@@ -757,19 +786,40 @@ def _branding_logo_names(section: Mapping[str, Any]) -> dict[str, str]:
     return {}
 
 
+def _packaged_branding_asset(name: str) -> BrandingAsset | None:
+    """Load a distribution default logo from the package resources only."""
+    package_dir = resources.files("omnigent.resources").joinpath("branding", "wakevane")
+    asset = _validated_image(Path(str(package_dir.joinpath(name))), packaged=True)
+    if asset is None:
+        logger.warning("packaged branding logo %r is missing or invalid — ignoring", name)
+    return asset
+
+
 def load_branding_snapshot(config: Mapping[str, Any] | None = None) -> BrandingSnapshot:
-    """Load and validate branding once for a single application instance."""
+    """Load and validate branding once for a single application instance.
+
+    Operator keys override :data:`DISTRIBUTION_BRANDING` one key (and one logo
+    variant) at a time.
+    """
     loaded_config = load_server_config() if config is None else config
-    section = _branding_section(loaded_config)
+    operator = _branding_section(loaded_config)
+    section = {
+        **DISTRIBUTION_BRANDING,
+        **{key: value for key, value in operator.items() if value is not None},
+    }
     assets_dir = _branding_assets_dir()
     validated_assets: dict[Path, BrandingAsset | None] = {}
     logo_assets: dict[str, BrandingAsset] = {}
-    for variant, name in _branding_logo_names(section).items():
-        asset = _resolve_branding_asset(
-            name,
-            assets_dir=assets_dir,
-            validated_assets=validated_assets,
-        )
+    operator_logos = _branding_logo_names(operator)
+    for variant in LOGO_VARIANTS:
+        if variant in operator_logos:
+            asset = _resolve_branding_asset(
+                operator_logos[variant],
+                assets_dir=assets_dir,
+                validated_assets=validated_assets,
+            )
+        else:
+            asset = _packaged_branding_asset(DISTRIBUTION_BRANDING["logo"][variant])
         if asset is not None:
             logo_assets[variant] = asset
     return BrandingSnapshot(
