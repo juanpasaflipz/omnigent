@@ -97,6 +97,20 @@ ignored: deleting the registration is how a shim leaves the report.
 The route is user-gated like `GET /v1/usage` (401 without an identity in
 multi-user mode).
 
+## In the web UI
+
+The **Shims** page (`/shims`, sidebar entry "Shims") renders this report as a
+table: name, owner, fire count, last fired (relative), review-by version and a
+**Retirable** badge. Expanding a row shows the reason, the model gap, the
+version it was added in and the per-model firing counts. The 7 / 30 / 90 day
+buttons set `idle_days`. The page is behind the `shims_page` release flag:
+
+```sh
+OMNIGENT_FEATURES=shims_page omnigent server
+```
+
+Reload the web app after changing the flag; `GET /v1/shims` itself is not gated.
+
 ## The janitor automation
 
 [`examples/shim-janitor`](../examples/shim-janitor) is an agent that calls

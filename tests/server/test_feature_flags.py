@@ -32,6 +32,7 @@ def test_unset_or_empty_uses_feature_defaults(environ: dict[str, str]) -> None:
         "grid_sessions_display_ui": False,
         "automations_v2": False,
         "splittable_terminal_view_ui": False,
+        "shims_page": False,
     }
 
 
@@ -80,6 +81,13 @@ def test_canvas_is_a_frontend_visible_feature() -> None:
     assert flags.enabled(Feature.CANVAS)
     assert flags.frontend_dict()["canvas"] is True
     assert flags.enabled_names() == ("canvas", "claude_osc_status")
+
+
+def test_shims_page_is_a_frontend_visible_feature() -> None:
+    flags = resolve_feature_flags({FEATURES_ENV_VAR: "shims_page"})
+
+    assert flags.enabled(Feature.SHIMS_PAGE)
+    assert flags.frontend_dict()["shims_page"] is True
 
 
 def test_arca_shutdown_warnings_are_frontend_visible() -> None:

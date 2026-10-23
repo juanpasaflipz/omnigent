@@ -108,6 +108,22 @@ is more than 25 percentage points below its harness average (computed
 client-side from `by_harness`). Rates the server could not compute print as
 `—`.
 
+### In the web UI
+
+The web Usage page (`/usage`) has an **Efficiency** tab that renders the same
+scorecard: the totals row, the per-harness and per-model tables (with cost
+share), and the top 50 sessions by cost, each linking to its session. A
+warning icon marks the same outliers as the CLI's `!`, and rates with no
+tokens show `—`. The page's window buttons set `days` (7, 30, 90; "All time"
+asks for the 366-day maximum, and a custom range uses its start date because
+the scorecard always ends today).
+
+The tab rides on the Usage page's release flag, so enable it with:
+
+```sh
+OMNIGENT_FEATURES=usage_page omnigent server
+```
+
 ### How to read it
 
 - **Low cache hit rate on a long session** usually means prompt churn: the
