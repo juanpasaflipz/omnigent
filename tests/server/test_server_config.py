@@ -22,6 +22,7 @@ from omnigent.server.server_config import (
     BRANDING_ASSET_MAX_DIMENSION,
     BRANDING_ASSET_MAX_FRAMES,
     BRANDING_ASSETS_DIRNAME,
+    DISTRIBUTION_BRANDING,
     branding_config,
     branding_logo_asset,
     config_str_list,
@@ -223,6 +224,94 @@ def test_session_title_instructions_accepts_trimmed_string() -> None:
 )
 def test_session_title_instructions_ignores_unset_or_invalid_values(value: object) -> None:
     assert session_title_instructions({"session_title_instructions": value}) is None
+
+
+_PACKAGED_LOGOS = {
+    "main": "/v1/branding/logo/main",
+    "loading": "/v1/branding/logo/loading",
+    "favicon": "/v1/branding/logo/favicon",
+}
+
+
+def test_distribution_branding_applies_without_operator_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("OMNIGENT_CONFIG", str(tmp_path / "absent.yaml"))
+
+    snapshot = load_branding_snapshot()
+
+    assert snapshot.config() == {
+        "app_name": "WakeVane",
+        "heading": "Wake agents. Steer outcomes.",
+        "logos": _PACKAGED_LOGOS,
+        "powered_by": True,
+    }
+    package_dir = Path(server_config_module.__file__).parent.parent / "resources" / "branding"
+    for variant, filename in DISTRIBUTION_BRANDING["logo"].items():
+        asset = snapshot.logo_asset(variant)
+        assert asset is not None
+        assert asset.media_type == "image/svg+xml"
+        assert asset.path == package_dir / "wakevane" / filename
+        assert asset.content == asset.path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("operator", "expected"),
+    [
+        ({"app_name": "Acme Agent"}, {"app_name": "Acme Agent"}),
+        ({"heading": ""}, {"heading": ""}),
+        ({"heading": "Build with Acme"}, {"heading": "Build with Acme"}),
+        ({"powered_by": False}, {"powered_by": False}),
+        ({"app_name": None, "heading": None}, {}),
+    ],
+)
+def test_operator_branding_overrides_only_its_own_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operator: dict[str, object],
+    expected: dict[str, object],
+) -> None:
+    monkeypatch.setenv("OMNIGENT_CONFIG", str(tmp_path / "absent.yaml"))
+
+    config = load_branding_snapshot({"branding": operator}).config()
+
+    assert config == {
+        "app_name": "WakeVane",
+        "heading": "Wake agents. Steer outcomes.",
+        "logos": _PACKAGED_LOGOS,
+        "powered_by": True,
+        **expected,
+    }
+
+
+def test_operator_logo_variant_replaces_only_that_variant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assets = _write_branding_config(monkeypatch, tmp_path, "logo.png")
+    payload = _image_bytes("PNG")
+    (assets / "logo.png").write_bytes(payload)
+
+    snapshot = load_branding_snapshot()
+
+    main = snapshot.logo_asset("main")
+    assert main is not None
+    assert main.content == payload
+    assert main.media_type == "image/png"
+    for variant in ("loading", "favicon"):
+        packaged = snapshot.logo_asset(variant)
+        assert packaged is not None
+        assert packaged.media_type == "image/svg+xml"
+
+
+def test_packaged_svg_is_never_accepted_from_operator_assets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assets = _write_branding_config(monkeypatch, tmp_path, "logo.svg")
+    packaged = Path(server_config_module.__file__).parent.parent / "resources" / "branding"
+    (assets / "logo.svg").write_bytes((packaged / "wakevane" / "logo.svg").read_bytes())
+
+    assert branding_logo_asset() is None
+    assert branding_config()["logos"]["main"] is None
 
 
 def _write_branding_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, logo: str) -> Path:

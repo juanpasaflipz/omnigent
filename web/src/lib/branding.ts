@@ -1,8 +1,8 @@
 import type { Branding } from "./capabilities";
 import { useServerInfo } from "./CapabilitiesContext";
 
-export const DEFAULT_APP_NAME = "Omnigent";
-export const DEFAULT_HEADING = "What should we build?";
+export const DEFAULT_APP_NAME = "WakeVane";
+export const DEFAULT_HEADING = "Wake agents. Steer outcomes.";
 
 const EMPTY_BRANDING: Branding = {
   app_name: null,
@@ -33,9 +33,13 @@ export function useLogoUrl(variant: "main" | "loading"): string | null {
   return variant === "loading" ? (logos.loading ?? logos.main) : logos.main;
 }
 
-/** Show "Powered by Omnigent" only when custom branding is set and not disabled. */
+/** Show "Powered by Omnigent" whenever the app is not named Omnigent, unless disabled. */
 export function usePoweredBy(): boolean {
   const info = useServerInfo();
-  const branding = info !== "loading" ? info.branding : null;
-  return branding != null && branding.powered_by;
+  const branding = useBranding();
+  return (
+    info !== "loading" &&
+    (branding.app_name ?? DEFAULT_APP_NAME) !== "Omnigent" &&
+    branding.powered_by
+  );
 }

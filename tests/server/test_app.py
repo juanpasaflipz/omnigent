@@ -839,6 +839,69 @@ async def test_branding_missing_at_startup_remains_missing_until_app_recreation(
 
 
 @pytest.mark.asyncio
+async def test_branding_defaults_to_packaged_wakevane_logos(
+    db_uri: str,
+    runtime_init: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """With no branding block, the distribution defaults and packaged SVGs are served."""
+    monkeypatch.setenv("OMNIGENT_CONFIG", str(tmp_path / "absent.yaml"))
+    app = _build_branding_app(db_uri, tmp_path, "distribution-default")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        info_branding = (await client.get("/v1/info")).json()["branding"]
+        responses = {
+            variant: await client.get(f"/v1/branding/logo/{variant}", headers={"Cookie": ""})
+            for variant in ("main", "loading", "favicon")
+        }
+
+    assert info_branding["app_name"] == "WakeVane"
+    assert info_branding["heading"] == "Wake agents. Steer outcomes."
+    assert info_branding["powered_by"] is True
+    package_dir = Path(server_app.__file__).parent.parent / "resources" / "branding" / "wakevane"
+    for variant, filename in (
+        ("main", "logo.svg"),
+        ("loading", "loading.svg"),
+        ("favicon", "favicon.svg"),
+    ):
+        response = responses[variant]
+        assert info_branding["logos"][variant] == f"/v1/branding/logo/{variant}"
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/svg+xml")
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert "default-src 'none'" in response.headers["content-security-policy"]
+        assert response.content == (package_dir / filename).read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_branding_operator_logo_replaces_only_its_variant(
+    db_uri: str,
+    runtime_init: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("branding:\n  logo:\n    main: logo.png\n")
+    assets = tmp_path / "branding-assets"
+    assets.mkdir()
+    payload = _branding_png((25, 100, 200, 255))
+    (assets / "logo.png").write_bytes(payload)
+    monkeypatch.setenv("OMNIGENT_CONFIG", str(config))
+
+    app = _build_branding_app(db_uri, tmp_path, "operator-main")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        main = await client.get("/v1/branding/logo/main")
+        loading = await client.get("/v1/branding/logo/loading")
+
+    assert main.content == payload
+    assert main.headers["content-type"].startswith("image/png")
+    assert loading.status_code == 200
+    assert loading.headers["content-type"].startswith("image/svg+xml")
+
+
+@pytest.mark.asyncio
 async def test_branding_openapi_declares_binary_images_and_typed_info(
     client: httpx.AsyncClient,
 ) -> None:
@@ -848,6 +911,7 @@ async def test_branding_openapi_declares_binary_images_and_typed_info(
         "image/gif",
         "image/jpeg",
         "image/png",
+        "image/svg+xml",
         "image/webp",
         "image/x-icon",
     }

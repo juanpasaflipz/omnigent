@@ -3279,6 +3279,7 @@ def create_app(
                         "image/gif",
                         "image/jpeg",
                         "image/png",
+                        "image/svg+xml",
                         "image/webp",
                         "image/x-icon",
                     )
@@ -3292,11 +3293,10 @@ def create_app(
         asset = branding_snapshot.logo_asset(variant)
         if asset is None:
             raise StarletteHTTPException(status_code=404, detail="Branding logo not found")
-        return Response(
-            content=asset.content,
-            media_type=asset.media_type,
-            headers={"X-Content-Type-Options": "nosniff"},
-        )
+        headers = {"X-Content-Type-Options": "nosniff"}
+        if asset.media_type == "image/svg+xml":
+            headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'"
+        return Response(content=asset.content, media_type=asset.media_type, headers=headers)
 
     @app.get("/v1/me", response_model=None)  # Union return type (dict | JSONResponse)
     async def me(request: Request) -> dict[str, str | bool | None] | JSONResponse:

@@ -11161,6 +11161,12 @@
                   "type": "string"
                 }
               },
+              "image/svg+xml": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
               "image/webp": {
                 "schema": {
                   "format": "binary",
