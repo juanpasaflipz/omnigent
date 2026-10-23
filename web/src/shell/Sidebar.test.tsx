@@ -1075,6 +1075,27 @@ describe("Sidebar session list", () => {
     expect(usage).toHaveClass("bg-[var(--sidebar-active)]");
   });
 
+  it("hides Shims navigation while the release feature is off", () => {
+    mockConversations(THREE_TYPE_CONVERSATIONS);
+    renderSidebar(true, "/shims");
+
+    expect(screen.queryByTestId("shims-nav")).toBeNull();
+  });
+
+  it("shows and highlights Shims navigation without lighting New session", () => {
+    mockConversations(THREE_TYPE_CONVERSATIONS);
+    renderSidebar(true, "/shims", undefined, {
+      ...FALLBACK_SERVER_INFO,
+      features: { shims_page: true },
+    });
+
+    const shims = screen.getByTestId("shims-nav");
+    expect(shims).toHaveAttribute("href", "/shims");
+    expect(shims).toHaveAttribute("aria-current", "page");
+    expect(shims).toHaveClass("bg-[var(--sidebar-active)]");
+    expect(screen.getByTestId("new-chat-button")).not.toHaveClass("bg-[var(--sidebar-active)]");
+  });
+
   it("hides Canvas navigation while the release feature is off", () => {
     mockConversations(THREE_TYPE_CONVERSATIONS);
     renderSidebar(true, "/canvas");

@@ -78,6 +78,7 @@ import {
   UserRoundIcon,
   UsersIcon,
   WalletIcon,
+  WrenchIcon,
   XIcon,
   type LucideIcon,
 } from "lucide-react";
@@ -497,6 +498,7 @@ function useActiveNavItem(): {
   isCanvasPage: boolean;
   isTasksPage: boolean;
   isUsagePage: boolean;
+  isShimsPage: boolean;
   activeExtensionPageId: string | null;
   newSessionProjectName: string | null;
 } {
@@ -515,6 +517,7 @@ function useActiveNavItem(): {
     !isExtensionRoute && isCanvasPathname(location.pathname, rebasePath("/canvas"));
   const isTasksPage = !isExtensionRoute && leaf === "tasks";
   const isUsagePage = !isExtensionRoute && leaf === "usage";
+  const isShimsPage = !isExtensionRoute && leaf === "shims";
   const activeExtensionPageId =
     resolveExtensionPageFromPath(extensions, location.pathname)?.page.id ?? null;
   const isNewSessionRoute =
@@ -524,6 +527,7 @@ function useActiveNavItem(): {
     !isCanvasPage &&
     !isTasksPage &&
     !isUsagePage &&
+    !isShimsPage &&
     !isExtensionRoute;
   const requestedProject = isNewSessionRoute
     ? new URLSearchParams(location.search).get("project")
@@ -539,6 +543,7 @@ function useActiveNavItem(): {
     isCanvasPage,
     isTasksPage,
     isUsagePage,
+    isShimsPage,
     activeExtensionPageId,
     newSessionProjectName,
   };
@@ -689,6 +694,7 @@ function SidebarImpl({
   const serverInfo = useServerInfo();
   const usagePageEnabled = isFeatureEnabled(serverInfo, "usage_page");
   const canvasEnabled = isFeatureEnabled(serverInfo, "canvas");
+  const shimsPageEnabled = isFeatureEnabled(serverInfo, "shims_page");
   const [searchParams] = useSearchParams();
   const canvasDestination = canvasLocation(searchParams.get(CANVAS_QUERY_PARAM) ?? MAIN_CANVAS_ID);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -817,6 +823,7 @@ function SidebarImpl({
     isCanvasPage,
     isTasksPage,
     isUsagePage,
+    isShimsPage,
     activeExtensionPageId,
     newSessionProjectName,
   } = useActiveNavItem();
@@ -1316,6 +1323,17 @@ function SidebarImpl({
                     Usage
                   </Link>
                 </Button>
+              )}
+              {shimsPageEnabled && (
+                <PrimaryNavLink
+                  to="/shims"
+                  label="Shims"
+                  icon={WrenchIcon}
+                  active={isShimsPage}
+                  onClick={onNavClick}
+                  componentId="sidebar.shims"
+                  testId="shims-nav"
+                />
               )}
             </div>
 

@@ -33,6 +33,7 @@ class Feature(StrEnum):
     AUTOMATIONS_V2 = "automations_v2"
     SPLITTABLE_TERMINAL_VIEW_UI = "splittable_terminal_view_ui"
     SUBSCRIPTIONS = "subscriptions"
+    SHIMS_PAGE = "shims_page"
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,12 @@ FEATURE_DEFINITIONS: tuple[FeatureDefinition, ...] = (
         owner="server",
         review_by_release="0.24.0",
         frontend_visible=False,
+    ),
+    FeatureDefinition(
+        feature=Feature.SHIMS_PAGE,
+        description="Web Shims page listing registered shims, their firings and retirability",
+        owner="web",
+        review_by_release="0.24.0",
     ),
 )
 

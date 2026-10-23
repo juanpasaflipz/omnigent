@@ -63,6 +63,10 @@ const UsagePage = withPageView(
   "usage",
   lazy(() => import("@/pages/UsagePage").then((m) => ({ default: m.UsagePage }))),
 );
+const ShimsPage = withPageView(
+  "shims",
+  lazy(() => import("@/pages/ShimsPage").then((m) => ({ default: m.ShimsPage }))),
+);
 const SettingsPage = lazy(() =>
   import("@/pages/SettingsPage").then((m) => ({ default: m.SettingsPage })),
 );
@@ -200,6 +204,14 @@ function AppRoutes({ basename }: AppProps) {
             element={
               <FeatureGatedPage feature="usage_page">
                 <UsagePage />
+              </FeatureGatedPage>
+            }
+          />
+          <Route
+            path={`${prefix}/shims`}
+            element={
+              <FeatureGatedPage feature="shims_page">
+                <ShimsPage />
               </FeatureGatedPage>
             }
           />
