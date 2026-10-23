@@ -125,7 +125,7 @@ export function FactoryCard() {
       {repos.data?.connected && (
         <div className="flex flex-wrap items-start gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="factory-budget">Budget per day (USD)</Label>
+            <Label htmlFor="factory-budget">Budget per run (USD)</Label>
             <Input
               id="factory-budget"
               type="number"

@@ -65,7 +65,7 @@ describe("FactoryCard", () => {
     renderCard();
 
     await user.selectOptions(await screen.findByLabelText("Repository"), "acme/api");
-    const budget = screen.getByLabelText("Budget per day (USD)");
+    const budget = screen.getByLabelText("Budget per run (USD)");
     expect(budget).toHaveValue(25);
     await user.clear(budget);
     await user.type(budget, "10");
@@ -151,7 +151,7 @@ describe("FactoryCard", () => {
     renderCard();
 
     await user.selectOptions(await screen.findByLabelText("Repository"), "acme/api");
-    await user.clear(screen.getByLabelText("Budget per day (USD)"));
+    await user.clear(screen.getByLabelText("Budget per run (USD)"));
 
     expect(screen.getByTestId("factory-start")).toBeDisabled();
   });
