@@ -88,6 +88,7 @@ from omnigent.runtime.compaction import (
 )
 from omnigent.runtime.content_resolver import resolve_content_references
 from omnigent.runtime.prompt import build_instructions, history_to_input_items
+from omnigent.runtime.shims import register_shim, shim_fired
 from omnigent.spec import AgentSpec
 from omnigent.spec.parser import check_unresolved_env_vars
 from omnigent.spec.types import (
@@ -3137,6 +3138,16 @@ async def compact_conversation_now(
     return result
 
 
+COMPACTION_BARE_MODEL_SHIM = register_shim(
+    "compaction.bare_model_provider_prefix",
+    reason="Generic LLM client routes prefix-less ids to OpenAI.",
+    model_gap="Model (or caller) emits a bare provider model id.",
+    added_in="0.19.0",
+    review_by="0.24.0",
+    owner="runtime",
+)
+
+
 def _route_bare_model_for_compaction(llm_config: LLMConfig) -> LLMConfig:
     """
     Prefix bare model ids so compaction's generic client picks the right provider.
@@ -3159,10 +3170,12 @@ def _route_bare_model_for_compaction(llm_config: LLMConfig) -> LLMConfig:
         # Already provider-prefixed (e.g. "anthropic/claude-…") — trust it.
         return llm_config
     if model.startswith("databricks-"):
+        shim_fired(COMPACTION_BARE_MODEL_SHIM, model=model)
         return replace(llm_config, model=f"databricks/{model}")
     if model.startswith("claude-"):
         # Bare Anthropic id (e.g. "claude-haiku-4-5-20251001") — route to
         # Anthropic instead of the prefix-less OpenAI default.
+        shim_fired(COMPACTION_BARE_MODEL_SHIM, model=model)
         return replace(llm_config, model=f"anthropic/{model}")
     # ponytail: only databricks + anthropic here — the /compact failures seen
     # in the wild. Other bare non-OpenAI prefixes (deepseek-, moonshot-, …)

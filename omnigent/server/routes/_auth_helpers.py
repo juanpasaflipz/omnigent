@@ -97,6 +97,37 @@ def require_user(
     return user_id
 
 
+async def require_admin(
+    request: Request,
+    auth_provider: AuthProvider | None,
+    permission_store: PermissionStore | None,
+    *,
+    action: str,
+) -> str | None:
+    """Extract user identity and require server-admin status in multi-user mode.
+
+    Single-user mode (no auth provider) and deployments without a permission
+    store skip the admin check, matching the other admin-only routes.
+
+    :param request: The incoming FastAPI request.
+    :param auth_provider: The auth provider, or ``None`` to skip auth.
+    :param permission_store: Permission store for the admin lookup, or ``None``.
+    :param action: What the caller is trying to do, for the 403 message,
+        e.g. ``"read the shim registry"``.
+    :returns: User ID string, or ``None`` if no auth provider.
+    :raises OmnigentError: 401 if unauthenticated, 403 if not an admin.
+    """
+    user_id = require_user(request, auth_provider)
+    if user_id is None or permission_store is None:
+        return user_id
+    if not await asyncio.to_thread(permission_store.is_admin, user_id):
+        raise OmnigentError(
+            f"Admin privileges required to {action}",
+            code=ErrorCode.FORBIDDEN,
+        )
+    return user_id
+
+
 def _require_access_sync(
     user_id: str | None,
     conversation_id: str,

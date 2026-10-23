@@ -25,11 +25,21 @@ from omnigent.llms.errors import (
     RetryableLLMError,
     detect_request_size_overflow,
 )
+from omnigent.runtime.shims import register_shim, shim_fired
 from omnigent.spec.types import RetryPolicy
 
 _logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+CONTEXT_OVERFLOW_SNIFF_SHIM = register_shim(
+    "llm.context_overflow_text_sniff",
+    reason="Providers report context overflow as prose in a 400/413 body, not structurally.",
+    model_gap="Provider error bodies carry the token counts only as free text.",
+    added_in="0.19.0",
+    review_by="0.24.0",
+    owner="runtime",
+)
 
 
 @dataclass
@@ -50,6 +60,21 @@ class _OverflowTokens:
 def _detect_context_overflow(body: str) -> _OverflowTokens | None:
     """
     Parse provider-specific context-overflow error messages and
+    extract token counts, recording a shim firing on every match.
+
+    :param body: The raw HTTP response body string from the provider.
+    :returns: Parsed token counts, or ``None`` if the body does not
+        match any known overflow pattern.
+    """
+    overflow = _match_context_overflow(body)
+    if overflow is not None:
+        shim_fired(CONTEXT_OVERFLOW_SNIFF_SHIM)
+    return overflow
+
+
+def _match_context_overflow(body: str) -> _OverflowTokens | None:
+    """
+    Match provider-specific context-overflow error messages and
     extract token counts.
 
     Matches conservatively — only well-known error shapes produce a

@@ -2010,3 +2010,25 @@ def test_route_bare_model_preserves_databricks_and_prefixed_ids() -> None:
         assert _route_bare_model_for_compaction(LLMConfig(model=prefixed)).model == prefixed
     # Bare gpt-* is correctly OpenAI already — unchanged.
     assert _route_bare_model_for_compaction(LLMConfig(model="gpt-4o")).model == "gpt-4o"
+
+
+def test_route_bare_model_fires_shim_only_on_rewrite(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The provider-prefix shim is recorded per rewrite, never on a pass-through."""
+    from omnigent.runtime import workflow
+
+    fired: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        workflow,
+        "shim_fired",
+        lambda shim, *, model=None, harness=None: fired.append((shim.name, model)),
+    )
+
+    _route_bare_model_for_compaction(LLMConfig(model="claude-haiku-4-5-20251001"))
+    _route_bare_model_for_compaction(LLMConfig(model="databricks-claude-sonnet-4"))
+    _route_bare_model_for_compaction(LLMConfig(model="anthropic/claude-haiku-4-5-20251001"))
+    _route_bare_model_for_compaction(LLMConfig(model="gpt-4o"))
+
+    assert fired == [
+        ("compaction.bare_model_provider_prefix", "claude-haiku-4-5-20251001"),
+        ("compaction.bare_model_provider_prefix", "databricks-claude-sonnet-4"),
+    ]

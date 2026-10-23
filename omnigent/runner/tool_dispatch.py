@@ -65,6 +65,7 @@ from omnigent.models.model_override import (
 )
 from omnigent.native.native_coding_agents import public_agent_name
 from omnigent.runtime.mcp_tool_result import encode_mcp_image_result, native_image_payload
+from omnigent.runtime.shims import register_shim, shim_fired
 from omnigent.tools import ToolManager
 from omnigent.tools.base import Tool, ToolContext
 from omnigent.tools.builtins._arguments import parse_json_object_arguments
@@ -7959,6 +7960,16 @@ def _truncate_inbox_output(output: object, *, source_session_id: str | None = No
     )
 
 
+EMPTY_COMPLETION_PHRASING_SHIM = register_shim(
+    "inbox.empty_completion_phrasing",
+    reason="A dangling '…returned: ' reads to the parent as a truncated hand-off.",
+    model_gap="Parent model treats an empty completion line as garbled output and retries.",
+    added_in="0.19.0",
+    review_by="0.24.0",
+    owner="runner",
+)
+
+
 def _format_async_task_item(payload: _JsonObject) -> str:
     """
     Render a completed/failed/cancelled async-task inbox payload.
@@ -7985,6 +7996,7 @@ def _format_async_task_item(payload: _JsonObject) -> str:
         target = f"{agent}:{title}" if title else str(agent)
         if status == "completed":
             if not has_output:
+                shim_fired(EMPTY_COMPLETION_PHRASING_SHIM)
                 return (
                     f"[System: sub-agent task {handle_id} completed — {target} produced no output]"
                 )
@@ -8004,6 +8016,7 @@ def _format_async_task_item(payload: _JsonObject) -> str:
         return f"[System: sub-agent task {handle_id} {status} — {target}: {output}]"
     if status == "completed":
         if not has_output:
+            shim_fired(EMPTY_COMPLETION_PHRASING_SHIM)
             return f"[System: task {handle_id} completed — {tool} produced no output]"
         return f"[System: task {handle_id} completed — {tool} returned: {output}]"
     if status == "failed":

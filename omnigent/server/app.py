@@ -128,6 +128,7 @@ from omnigent.server.routes.sessions import (
     set_server_runner_router,
 )
 from omnigent.server.routes.sharing import create_sharing_router
+from omnigent.server.routes.shims import create_shims_router
 from omnigent.server.routes.terminal_attach import create_terminal_attach_router
 from omnigent.server.routes.usage import create_usage_router
 from omnigent.server.runner_session_init import (
@@ -3419,6 +3420,13 @@ def create_app(
         ),
         prefix="/v1",
         tags=["usage"],
+    )
+    # Shim registry report (docs/SHIMS.md): which
+    # deterministic model-gap patches still fire, for the shim-janitor automation.
+    app.include_router(
+        create_shims_router(auth_provider=auth_provider, permission_store=permission_store),
+        prefix="/v1",
+        tags=["shims"],
     )
     # Server agent discovery for the new-session picker
     # (designs/BUILTIN_AGENTS.md), plus user agents (``omnigent agent add``).

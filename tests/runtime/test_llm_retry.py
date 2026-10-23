@@ -157,6 +157,31 @@ def test_classify_http_413_without_overflow_stays_permanent(
     assert result.code == "413"
 
 
+def test_context_overflow_sniff_fires_shim_only_on_match(
+    retryable_status_codes: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The text-sniff shim is recorded once per overflow match and never on a miss."""
+    from omnigent.runtime import llm_retry
+
+    fired: list[str] = []
+    monkeypatch.setattr(
+        llm_retry,
+        "shim_fired",
+        lambda shim, *, model=None, harness=None: fired.append(shim.name),
+    )
+
+    classify_llm_error(
+        _make_http_status_error(400, body="prompt is too long: 142000 tokens > 128000 maximum"),
+        retryable_status_codes,
+    )
+    classify_llm_error(
+        _make_http_status_error(400, body="bad request"),
+        retryable_status_codes,
+    )
+
+    assert fired == ["llm.context_overflow_text_sniff"]
+
+
 def test_classify_unknown_exception(
     retryable_status_codes: list[int],
 ) -> None:

@@ -8988,6 +8988,125 @@
         "title": "SetSharingRequest",
         "type": "object"
       },
+      "ShimReport": {
+        "description": "The `GET /v1/shims` payload.",
+        "properties": {
+          "idle_days": {
+            "description": "The idleness window `retirable` was computed against.",
+            "format": "int64",
+            "title": "Idle Days",
+            "type": "integer"
+          },
+          "shims": {
+            "description": "Every registered shim, in registration order.",
+            "items": {
+              "$ref": "#/components/schemas/ShimStatusResponse"
+            },
+            "title": "Shims",
+            "type": "array"
+          }
+        },
+        "required": [
+          "idle_days",
+          "shims"
+        ],
+        "title": "ShimReport",
+        "type": "object"
+      },
+      "ShimStatusResponse": {
+        "description": "One registered shim with its lifetime firing record.",
+        "properties": {
+          "added_in": {
+            "description": "Omnigent version that introduced the shim.",
+            "title": "Added In",
+            "type": "string"
+          },
+          "by_model": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "description": "Firings per model id; `\"unknown\"` when the call site has no model in scope.",
+            "title": "By Model",
+            "type": "object"
+          },
+          "fire_count": {
+            "description": "Lifetime firings across the server, the runner and the firing log on this machine.",
+            "format": "int64",
+            "minimum": 0.0,
+            "title": "Fire Count",
+            "type": "integer"
+          },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO-8601 UTC timestamp from which the deployment has observed the shim.",
+            "title": "First Seen At"
+          },
+          "last_fired_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO-8601 UTC timestamp of the latest firing, or `None` when it never fired.",
+            "title": "Last Fired At"
+          },
+          "model_gap": {
+            "description": "The model or provider behaviour the patch covers.",
+            "title": "Model Gap",
+            "type": "string"
+          },
+          "name": {
+            "description": "Stable dotted identifier, e.g. `\"compaction.bare_model_provider_prefix\"`.",
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "description": "Team or module that owns the shim.",
+            "title": "Owner",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why the patch exists.",
+            "title": "Reason",
+            "type": "string"
+          },
+          "retirable": {
+            "description": "`True` when the deployment has observed the shim for at least `idle_days` and it has not fired within that window.",
+            "title": "Retirable",
+            "type": "boolean"
+          },
+          "review_by": {
+            "description": "Version by which the shim must be re-justified or deleted.",
+            "title": "Review By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "reason",
+          "model_gap",
+          "added_in",
+          "review_by",
+          "owner",
+          "fire_count",
+          "last_fired_at",
+          "by_model",
+          "retirable"
+        ],
+        "title": "ShimStatusResponse",
+        "type": "object"
+      },
       "SkillContentResponse": {
         "properties": {
           "content": {
@@ -17670,6 +17789,53 @@
         "summary": "Set Sharing",
         "tags": [
           "sharing"
+        ]
+      }
+    },
+    "/v1/shims": {
+      "get": {
+        "description": "List every registered shim with its firing record.\n\n**Returns:** The shim report.",
+        "operationId": "get_shims_v1_shims_get",
+        "parameters": [
+          {
+            "description": "Days without a firing after which a shim is retirable.",
+            "in": "query",
+            "name": "idle_days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 3650,
+              "minimum": 1,
+              "title": "Idle Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShimReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Shims",
+        "tags": [
+          "shims"
         ]
       }
     },

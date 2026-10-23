@@ -9359,6 +9359,32 @@ def test_format_async_task_item_nonempty_subagent_completion_shows_output() -> N
     assert "produced no output" not in line
 
 
+def test_format_async_task_item_empty_completion_fires_shim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The empty-completion rewording is recorded as a shim firing, but only when it applies."""
+    from omnigent.runner import tool_dispatch
+    from omnigent.runner.tool_dispatch import _format_async_task_item
+
+    fired: list[str] = []
+    monkeypatch.setattr(
+        tool_dispatch,
+        "shim_fired",
+        lambda shim, *, model=None, harness=None: fired.append(shim.name),
+    )
+
+    _format_async_task_item(
+        {"type": "sub_agent", "handle_id": "conv_a", "agent": "worker", "status": "completed"}
+    )
+    _format_async_task_item({"handle_id": "task_b", "tool_name": "shell", "status": "completed"})
+    _format_async_task_item(
+        {"handle_id": "task_c", "tool_name": "shell", "status": "completed", "output": "ok"}
+    )
+    _format_async_task_item({"handle_id": "task_d", "tool_name": "shell", "status": "failed"})
+
+    assert fired == ["inbox.empty_completion_phrasing", "inbox.empty_completion_phrasing"]
+
+
 def test_format_async_task_item_truncated_subagent_output_names_retrieval_path() -> None:
     """
     A sub-agent handoff cut by the inbox delivery cap tells the parent how
