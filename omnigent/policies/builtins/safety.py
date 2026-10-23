@@ -362,6 +362,18 @@ SCHEDULED_TASK_APPROVAL_TOOLS: frozenset[str] = frozenset(
     {"sys_scheduled_task_create", "sys_scheduled_task_update"}
 )
 
+# ``sys_subscribe`` with an ``agent_id`` creates a *launch* subscription: every
+# matching event starts a fresh unattended session, so it gets the same
+# approval as creating a scheduled task. Subscribing the caller's own session
+# (no ``agent_id``) only wakes that session and stays ungated.
+SUBSCRIPTION_LAUNCH_TOOL = "sys_subscribe"
+
+# Every tool ``ask_on_scheduled_task_change`` may gate; the builder never
+# fast-paths these past the engine.
+UNATTENDED_WORK_APPROVAL_TOOLS: frozenset[str] = SCHEDULED_TASK_APPROVAL_TOOLS | {
+    SUBSCRIPTION_LAUNCH_TOOL
+}
+
 
 # Settings a user weighs before approving, shown first in this order so
 # unexpected extra arguments cannot push them out of the prompt.
@@ -380,6 +392,19 @@ _SCHEDULED_TASK_SETTINGS = (
     "reasoning_effort",
     "prompt",
 )
+# Launch-subscription settings shown first in the approval preview.
+_SUBSCRIPTION_LAUNCH_SETTINGS = (
+    "source",
+    "kind",
+    "match",
+    "agent_id",
+    "execution_target",
+    "host_id",
+    "workspace",
+    "max_cost_usd",
+    "model_override",
+    "prompt_template",
+)
 _PREVIEW_VALUE_CHARS = 60
 _PREVIEW_EXTRA_CHARS = 200
 
@@ -389,6 +414,45 @@ def _clip(value: str) -> str:
     if len(value) > _PREVIEW_VALUE_CHARS:
         return value[: _PREVIEW_VALUE_CHARS - 3] + "..."
     return value
+
+
+def _subscription_launch_preview(args: dict[str, object]) -> str:
+    """``key=value`` pairs for a launch subscription, the template sized only."""
+    pairs: list[str] = []
+    for key in _SUBSCRIPTION_LAUNCH_SETTINGS:
+        if key not in args:
+            continue
+        value = str(args[key])
+        if key == "prompt_template":
+            pairs.append(f"prompt_template={len(value)} chars")
+        else:
+            pairs.append(f"{key}={_clip(value)}")
+    return ", ".join(pairs)
+
+
+def _ask_on_subscription_launch(args: object) -> PolicyResponse:
+    """ASK before ``sys_subscribe`` creates a launch subscription.
+
+    Unparseable arguments fail closed (ASK), since the call might carry an
+    ``agent_id`` the policy cannot see.
+    """
+    if not isinstance(args, dict):
+        return {
+            "result": "ASK",
+            "reason": (
+                "Agent wants to create an event subscription (details unavailable). Approve?"
+            ),
+        }
+    if args.get("agent_id") is None:
+        return _ALLOW
+    preview = _subscription_launch_preview(args)
+    return {
+        "result": "ASK",
+        "reason": (
+            "Agent wants to create an event subscription that launches a new session "
+            f"on every matching event ({preview}). Approve?"
+        ),
+    }
 
 
 def _scheduled_task_settings(args: dict[str, object], *, skip: str) -> str:
@@ -423,12 +487,15 @@ def _scheduled_task_settings(args: dict[str, object], *, skip: str) -> str:
 
 
 def ask_on_scheduled_task_change(event: PolicyEvent) -> PolicyResponse:
-    """ASK for user approval before an agent creates or updates a scheduled task.
+    """ASK for user approval before an agent creates or updates unattended work.
 
-    Matches ``event["target"]`` (the dispatched tool identity) rather than
-    ``data["name"]``, which an earlier policy may have transformed. Reads
-    and ``sys_scheduled_task_delete`` are not gated here: deleting a task
-    only removes future runs instead of scheduling new unattended work.
+    Gates scheduled-task create/update and ``sys_subscribe`` calls that carry
+    an ``agent_id`` (a launch subscription, which starts a new session on
+    every matching event). Matches ``event["target"]`` (the dispatched tool
+    identity) rather than ``data["name"]``, which an earlier policy may have
+    transformed. Reads, ``sys_scheduled_task_delete`` and a ``sys_subscribe``
+    that only wakes the caller's own session are not gated: none of them
+    schedules new unattended work.
 
     :param event: Policy event dict.
     :returns: ASK if a scheduled task is being created or updated, ALLOW
@@ -437,10 +504,12 @@ def ask_on_scheduled_task_change(event: PolicyEvent) -> PolicyResponse:
     if event.get("type") != "tool_call":
         return _ALLOW
     tool = event.get("target")
-    if tool not in SCHEDULED_TASK_APPROVAL_TOOLS:
+    if tool not in UNATTENDED_WORK_APPROVAL_TOOLS:
         return _ALLOW
     data = event.get("data")
     args = data.get("arguments") if isinstance(data, dict) else None
+    if tool == SUBSCRIPTION_LAUNCH_TOOL:
+        return _ask_on_subscription_launch(args)
     if not isinstance(args, dict):
         args = {}
     action = "create" if tool == "sys_scheduled_task_create" else "update"

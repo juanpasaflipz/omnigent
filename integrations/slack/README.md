@@ -130,6 +130,32 @@ uv tool install "omnigent[slack]"     # or, from a source checkout: uv sync --ex
 
 Set `LOG_LEVEL=DEBUG` in the environment when diagnosing why Slack events are not producing replies.
 
+### Forwarding messages to the event bus (optional)
+
+Set `OMNIGENT_SLACK_FORWARD_EVENTS=true` to have the bot publish every channel
+message and thread reply it sees to the server's event bus, so agents can
+subscribe to Slack activity (see [`docs/SUBSCRIPTIONS.md`](../../docs/SUBSCRIPTIONS.md)).
+Each message becomes a `POST /v1/events/webhook` with kind `slack.message` and
+fields `channel`, `thread_ts` (the thread root; a top-level message's own `ts`),
+`ts`, `user`, `text` (truncated to 4,000 characters) and `is_thread_reply`.
+
+- The server must run with the `subscriptions` feature flag
+  (`OMNIGENT_FEATURES=subscriptions`), or the webhook answers 404.
+- The bot only sees what Slack delivers to it: add the channel-history scopes
+  and `message.channels` / `message.groups` / `message.mpim` event
+  subscriptions above for the channel types you want forwarded, and invite the
+  bot to those channels.
+- The bot's own messages, other bots, edits/deletes, channel housekeeping
+  (joins, topic changes) and DMs are never forwarded.
+- Each message is published with the **poster's** delegated token, so on an
+  auth-enabled server only messages from users who have signed in to the bot
+  are forwarded.
+- Forwarding runs beside normal handling: a failure is logged and never
+  affects the thread-to-session behaviour.
+
+An agent then waits on a channel or a thread with, for example,
+`sys_subscribe(source="webhook", kind="slack.message", match={"channel": "C0123"})`.
+
 ## Per-user setup flow
 
 The first time a user interacts with the bot (a channel `@mention` or a DM)

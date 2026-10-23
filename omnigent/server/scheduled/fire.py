@@ -25,6 +25,14 @@ firing:
 #. **Records the run** — stamps ``last_run_at`` + ``last_run_conversation_id`` on
    the task row and writes a ``scheduled_task_runs`` history row.
 
+**Reusable launch entry point.** The resolve → validate → create → grant →
+cost cap → launch sequence lives in :func:`_launch_for_task`. Scheduled fires
+reach it through :func:`_run_fire_for_task` (which adds run rows and task
+bookkeeping); other triggers describe a one-off launch with a
+:class:`LaunchRequest` and call :func:`launch_session` (or the fire-and-forget
+:func:`start_session_launch`). Event subscriptions that launch a session per
+matching event use this path, so they inherit every target rule above.
+
 **Fire-and-forget.** The re-read + state guard run synchronously so an obviously
 dead fire costs nothing, but the session creation / launch is dispatched onto a
 background :func:`asyncio.create_task` and ``on_fire`` returns immediately. If it
@@ -53,7 +61,7 @@ import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
@@ -95,7 +103,7 @@ _DEFAULT_WORKSPACE = "~"
 # only a weak reference, so without this a fire could be garbage-collected
 # mid-flight; each task is discarded from the set when it completes.
 # custom-lint: disable-next=workspace-scoped-cache -- set of Task objects
-_PENDING_FIRES: set[asyncio.Task[None]] = set()
+_PENDING_FIRES: set[asyncio.Task[Any]] = set()
 
 # Fire path overlap guard keyed by tenant + task. The scheduler's job.running
 # only covers its short on_fire callback; this covers the background
@@ -280,6 +288,171 @@ def _build_fire_dispatch(deps: FireDeps, launch_dispatch: LaunchDispatch | None)
     )
 
 
+@dataclass(frozen=True)
+class LaunchRequest:
+    """One unattended session launch that is not a scheduled-task fire.
+
+    The scheduled-task fire path is the server's single implementation of
+    "start a fresh session for an owner, unattended": target resolution,
+    validation, session creation, owner grant, cost cap and runner launch.
+    Other triggers (event subscriptions) describe their launch with this
+    dataclass and hand it to :func:`launch_session` /
+    :func:`start_session_launch`, so they reuse that machinery verbatim. The
+    fields mirror the matching :class:`ScheduledTask` columns.
+
+    :param owner_user_id: User the session's ``LEVEL_OWNER`` grant is written
+        for; ``None`` in single-user mode (resolves to ``"local"``).
+    :param agent_id: Agent the session is bound to.
+    :param prompt: First user message dispatched to the agent.
+    :param title: Session title, e.g. ``"issues.opened: triage"``.
+    :param source_id: Identifier of the trigger, used in logs (e.g. a
+        subscription id).
+    :param workspace_id: Tenant partition the launch runs in.
+    :param account_generation: Owner registration captured when the trigger
+        was created; a rotated or deleted registration launches nothing.
+    :param execution_target: ``"connected_host"`` or ``"managed_sandbox"``.
+    :param host_id: Pinned connected host, or ``None`` to resolve the owner's
+        most-recently-active online host at launch time.
+    :param workspace: Pinned workspace, or ``None`` for the host's home dir.
+    :param max_cost_usd: Optional cost cap attached as a ``cost_budget`` policy.
+    :param model_override: Optional model override for the session.
+    :param reasoning_effort: Optional reasoning-effort hint for the session.
+    :param permission_mode: Optional native-harness permission mode.
+    :param labels: Extra conversation labels stamped on the new session so it
+        stays traceable to its trigger.
+    """
+
+    owner_user_id: str | None
+    agent_id: str
+    prompt: str
+    title: str
+    source_id: str
+    workspace_id: int = 0
+    account_generation: str | None = None
+    execution_target: str = "connected_host"
+    host_id: str | None = None
+    workspace: str | None = None
+    max_cost_usd: float | None = None
+    model_override: str | None = None
+    reasoning_effort: str | None = None
+    permission_mode: str | None = None
+    labels: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class LaunchOutcome:
+    """How one :func:`launch_session` call ended.
+
+    :param status: ``"running"`` when the session launched, ``"failed"`` or
+        ``"skipped"`` otherwise.
+    :param conversation_id: The created session, when one was created.
+    :param error: Human-readable failure reason.
+    :param error_code: Machine-readable failure code, e.g. ``"no_online_host"``.
+    """
+
+    status: str
+    conversation_id: str | None = None
+    error: str | None = None
+    error_code: str | None = None
+
+
+def _request_as_task(request: LaunchRequest) -> ScheduledTask:
+    """Project a launch request onto the task shape the fire helpers read.
+
+    The helpers below are typed on :class:`ScheduledTask`; a one-off launch has
+    no schedule, so the recurrence fields are inert placeholders and nothing is
+    ever written back to the scheduled-task store for it.
+    """
+    return ScheduledTask(
+        id=request.source_id,
+        name=request.title,
+        prompt=request.prompt,
+        rrule="",
+        user_id=request.owner_user_id,
+        agent_id=request.agent_id,
+        timezone="UTC",
+        created_at=int(time.time()),
+        workspace_id=request.workspace_id,
+        model_override=request.model_override,
+        reasoning_effort=request.reasoning_effort,
+        permission_mode=request.permission_mode,
+        max_cost_usd=request.max_cost_usd,
+        workspace=request.workspace,
+        execution_target=request.execution_target,
+        host_id=request.host_id,
+        account_generation=request.account_generation,
+    )
+
+
+async def launch_session(
+    deps: FireDeps,
+    request: LaunchRequest,
+    *,
+    launch_dispatch: LaunchDispatch | None = None,
+) -> LaunchOutcome:
+    """Launch one fresh session through the scheduled-task fire machinery.
+
+    Runs the same resolve → validate → create → grant → cost cap → launch
+    sequence a scheduled fire does, under the request's tenant and owner
+    scopes, and returns how it ended instead of writing a scheduled-task run.
+    Never raises: failures are logged and reported in the outcome.
+
+    :param deps: Server stores/registries, shared with the scheduler.
+    :param request: What to launch and for whom.
+    :param launch_dispatch: Test seam replacing the real runner launch +
+        prompt dispatch for both execution targets.
+    :returns: The launch outcome.
+    """
+    fire_dispatch = _build_fire_dispatch(deps, launch_dispatch)
+    sink = _LaunchSink()
+    with (
+        workspace_scope(request.workspace_id),
+        account_authority_scope(request.owner_user_id, request.account_generation),
+        host_owner_scope(request.owner_user_id, request.account_generation),
+    ):
+        await _launch_for_task(
+            deps,
+            _request_as_task(request),
+            fire_dispatch,
+            sink,
+            extra_labels=dict(request.labels),
+        )
+    outcome = sink.outcome
+    if outcome.status == "pending":
+        outcome = LaunchOutcome("failed", error="launch failed", error_code="launch_failed")
+    if outcome.status != "running":
+        _logger.warning(
+            "session launch for %s did not start: %s (%s)",
+            request.source_id,
+            outcome.error,
+            outcome.error_code,
+        )
+    return outcome
+
+
+def start_session_launch(
+    deps: FireDeps,
+    request: LaunchRequest,
+    *,
+    launch_dispatch: LaunchDispatch | None = None,
+) -> asyncio.Task[LaunchOutcome]:
+    """Fire-and-forget :func:`launch_session`, holding a strong task reference.
+
+    A connected-host launch waits for the runner to connect, which can take
+    far longer than an ingest request (e.g. a GitHub webhook delivery) may
+    block, so callers on a request path start the launch in the background.
+
+    :returns: The background task; awaiting it yields the :class:`LaunchOutcome`.
+    """
+    task = asyncio.create_task(
+        launch_session(deps, request, launch_dispatch=launch_dispatch),
+        name=f"session-launch-{request.source_id}",
+    )
+    _PENDING_FIRES.add(task)
+    task.add_done_callback(_PENDING_FIRES.discard)
+    return task
+
+
 async def _trigger_fire(
     deps: FireDeps,
     workspace_id: int,
@@ -370,6 +543,85 @@ async def _run_fire(
             _logger.exception("scheduled fire: task %s failed", task.id)
 
 
+class _LaunchSink:
+    """Receives a launch's bookkeeping events; the base only remembers the outcome.
+
+    :func:`launch_session` uses this base directly. Scheduled fires use
+    :class:`_ScheduledTaskSink`, which additionally writes run rows, disables
+    the task on a deleted owner and rebinds a task saved on another user's agent.
+    """
+
+    def __init__(self) -> None:
+        self.outcome = LaunchOutcome(status="pending")
+
+    async def owner_deleted(self) -> None:
+        """The owner's registration is gone; nothing to disable by default."""
+
+    async def own_agent(self, task: ScheduledTask) -> ScheduledTask:
+        """Return the task bound to the agent it should launch (unchanged here)."""
+        return task
+
+    async def record(
+        self,
+        conversation_id: str | None,
+        *,
+        status: str,
+        error: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        """Remember how the launch ended."""
+        self.outcome = LaunchOutcome(status, conversation_id, error, error_code)
+
+    async def fail_running(self, conversation_id: str, error: str, error_code: str) -> None:
+        """A launch recorded as running failed afterwards."""
+        self.outcome = LaunchOutcome("failed", conversation_id, error, error_code)
+
+
+class _ScheduledTaskSink(_LaunchSink):
+    """Bookkeeping for a scheduled-task fire: run rows on the task's store."""
+
+    def __init__(self, deps: FireDeps, task: ScheduledTask, scheduled_at: int) -> None:
+        super().__init__()
+        self._deps = deps
+        self._task = task
+        self._scheduled_at = scheduled_at
+
+    async def owner_deleted(self) -> None:
+        """Disable a task whose owner registration is gone."""
+        await asyncio.to_thread(
+            self._deps.scheduled_task_store.update, self._task.id, state="deleted"
+        )
+
+    async def own_agent(self, task: ScheduledTask) -> ScheduledTask:
+        """Move a task saved on another user's agent onto its owner's copy."""
+        return await _own_task_agent(self._deps, task)
+
+    async def record(
+        self,
+        conversation_id: str | None,
+        *,
+        status: str,
+        error: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        """Stamp last_run_* and write a ``scheduled_task_runs`` row."""
+        await super().record(conversation_id, status=status, error=error, error_code=error_code)
+        await _record_run(
+            self._deps,
+            self._task,
+            conversation_id,
+            self._scheduled_at,
+            status=status,
+            error=error,
+            error_code=error_code,
+        )
+
+    async def fail_running(self, conversation_id: str, error: str, error_code: str) -> None:
+        """Fail the fire's still-running run row."""
+        await super().fail_running(conversation_id, error, error_code)
+        await _fail_running_run(self._deps, conversation_id, error, error_code)
+
+
 async def _run_fire_for_task(
     deps: FireDeps,
     task: ScheduledTask,
@@ -378,9 +630,26 @@ async def _run_fire_for_task(
 ) -> None:
     """Run a freshly re-read active task, routed by ``execution_target``.
 
-    ``managed_sandbox`` provisions a fresh sandbox per fire (never reusing an
-    existing one); ``connected_host`` runs the resolve/validate/launch flow
-    below. Any other target records a skipped run.
+    The launch itself is :func:`_launch_for_task`; this wrapper only binds the
+    scheduled-task bookkeeping (run rows, task disabling, agent rebinding) to it.
+    """
+    await _launch_for_task(deps, task, fire_dispatch, _ScheduledTaskSink(deps, task, scheduled_at))
+
+
+async def _launch_for_task(
+    deps: FireDeps,
+    task: ScheduledTask,
+    fire_dispatch: _FireDispatch,
+    sink: _LaunchSink,
+    *,
+    extra_labels: dict[str, str] | None = None,
+) -> None:
+    """Resolve, validate, create, grant and launch one session for ``task``.
+
+    Shared by scheduled fires and :func:`launch_session`. ``managed_sandbox``
+    provisions a fresh sandbox per launch (never reusing an existing one);
+    ``connected_host`` runs the resolve/validate/launch flow below. Any other
+    target records a skipped run. Every outcome is reported to ``sink``.
     """
     try:
         # A deleted / rotated owner registration fires nothing — managed or
@@ -391,12 +660,9 @@ async def _run_fire_for_task(
                 task.id,
                 task.user_id,
             )
-            await asyncio.to_thread(deps.scheduled_task_store.update, task.id, state="deleted")
-            await _record_run(
-                deps,
-                task,
+            await sink.owner_deleted()
+            await sink.record(
                 None,
-                scheduled_at,
                 status="failed",
                 error=f"owner {task.user_id!r} registration is no longer active; task disabled",
                 error_code="owner_deleted",
@@ -409,13 +675,9 @@ async def _run_fire_for_task(
                 task.id,
                 task.execution_target,
             )
-            await asyncio.to_thread(
-                _record_run_sync,
-                deps,
-                task,
+            await sink.record(
                 None,
-                scheduled_at,
-                "skipped",
+                status="skipped",
                 error=f"execution_target {task.execution_target!r} not supported yet",
                 error_code="unsupported_target",
             )
@@ -430,30 +692,14 @@ async def _run_fire_for_task(
             effective = await _resolve_effective_task(deps, task)
         except _CannotLaunchScheduledFire as exc:
             _logger.warning("scheduled fire: task %s cannot launch: %s", task.id, exc)
-            await _record_run(
-                deps,
-                task,
-                None,
-                scheduled_at,
-                status="failed",
-                error=str(exc),
-                error_code=exc.error_code,
-            )
+            await sink.record(None, status="failed", error=str(exc), error_code=exc.error_code)
             return
 
         input_error = None if managed else _validate_connected_host_inputs(effective)
         if input_error is not None:
             error, error_code = input_error
             _logger.warning("scheduled fire: task %s cannot run: %s", task.id, error)
-            await _record_run(
-                deps,
-                task,
-                None,
-                scheduled_at,
-                status="failed",
-                error=error,
-                error_code=error_code,
-            )
+            await sink.record(None, status="failed", error=error, error_code=error_code)
             return
 
         if preflight is not None:
@@ -461,15 +707,7 @@ async def _run_fire_for_task(
                 await preflight(effective)
             except _CannotLaunchScheduledFire as exc:
                 _logger.warning("scheduled fire: task %s cannot launch: %s", task.id, exc)
-                await _record_run(
-                    deps,
-                    task,
-                    None,
-                    scheduled_at,
-                    status="failed",
-                    error=str(exc),
-                    error_code=exc.error_code,
-                )
+                await sink.record(None, status="failed", error=str(exc), error_code=exc.error_code)
                 return
 
         # Check connected-host workspaces, including the resolved HOME default,
@@ -481,27 +719,16 @@ async def _run_fire_for_task(
         if validation_error is not None:
             error, error_code = validation_error
             _logger.warning("scheduled fire: task %s failed validation: %s", task.id, error)
-            await _record_run(
-                deps,
-                task,
-                None,
-                scheduled_at,
-                status="failed",
-                error=error,
-                error_code=error_code,
-            )
+            await sink.record(None, status="failed", error=error, error_code=error_code)
             return
 
         try:
-            effective = await _own_task_agent(deps, effective)
-            conv = await _create_session(deps, effective)
+            effective = await sink.own_agent(effective)
+            conv = await _create_session(deps, effective, extra_labels=extra_labels)
         except Exception:
             _logger.exception("scheduled fire: failed to create session for task %s", task.id)
-            await _record_run(
-                deps,
-                task,
+            await sink.record(
                 None,
-                scheduled_at,
                 status="failed",
                 error="session creation failed",
                 error_code="session_create_failed",
@@ -518,11 +745,8 @@ async def _run_fire_for_task(
                 task.id,
                 conv.id,
             )
-            await _record_run(
-                deps,
-                task,
+            await sink.record(
                 conv.id,
-                scheduled_at,
                 status="failed",
                 error="owner grant failed",
                 error_code="owner_grant_failed",
@@ -552,18 +776,15 @@ async def _run_fire_for_task(
                 task.id,
                 conv.id,
             )
-            await _record_run(
-                deps,
-                task,
+            await sink.record(
                 conv.id,
-                scheduled_at,
                 status="failed",
                 error="runner launch/dispatch failed",
                 error_code="launch_failed",
             )
             return
 
-        await _record_run(deps, task, conv.id, scheduled_at, status="running")
+        await sink.record(conv.id, status="running")
         if managed and fire_dispatch.managed_start is not None:
             # Started only after the run exists, so a fast launch failure has a
             # running run to fail.
@@ -576,7 +797,7 @@ async def _run_fire_for_task(
                     conv.id,
                 )
                 reason = f"managed sandbox failed to launch: {exc}"
-                await _fail_running_run(deps, conv.id, reason, "launch_failed")
+                await sink.fail_running(conv.id, reason, "launch_failed")
                 if deps.startup_inputs is not None:
                     await deps.startup_inputs.record_launch_failure(conv.id, reason)
                 return
@@ -880,8 +1101,18 @@ async def _agent_revision(deps: FireDeps, conv: Conversation) -> str | None:
     )
 
 
-async def _create_session(deps: FireDeps, task: ScheduledTask) -> Conversation:
-    """Create a conversation bound to the task's agent, carrying the stored spec."""
+async def _create_session(
+    deps: FireDeps,
+    task: ScheduledTask,
+    *,
+    extra_labels: dict[str, str] | None = None,
+) -> Conversation:
+    """Create a conversation bound to the task's agent, carrying the stored spec.
+
+    ``extra_labels`` (e.g. the subscription that launched the session) are
+    stamped alongside the presentation labels; a presentation label wins a
+    key collision so the UI contract is never overridden.
+    """
     conv: Conversation = await asyncio.to_thread(
         deps.conversation_store.create_conversation,
         agent_id=task.agent_id,
@@ -907,7 +1138,7 @@ async def _create_session(deps: FireDeps, task: ScheduledTask) -> Conversation:
     # Chat/Terminal switcher instead of rendering Chat-only. Stamped last (after
     # the override reload above) so the labels land on the conversation returned
     # to the launch/dispatch caller, not a stale pre-label reload of it.
-    labels = await _presentation_labels(deps, task)
+    labels = {**(extra_labels or {}), **await _presentation_labels(deps, task)}
     if labels:
         await asyncio.to_thread(deps.conversation_store.set_labels, conv.id, labels)
         conv.labels.update(labels)

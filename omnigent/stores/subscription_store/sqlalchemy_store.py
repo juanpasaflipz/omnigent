@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import asc, select
 from sqlalchemy.orm import Session
 
+from omnigent.db.account_authority import require_active_account
 from omnigent.db.db_models import (
     DEFAULT_WORKSPACE_ID,
     SqlSubscription,
@@ -71,6 +72,14 @@ def _to_entity(row: SqlSubscription) -> Subscription:
         updated_at=row.updated_at,
         last_fired_at=row.last_fired_at,
         fire_count=row.fire_count or 0,
+        agent_id=row.agent_id,
+        prompt_template=row.prompt_template,
+        execution_target=row.execution_target,
+        host_id=row.host_id,
+        workspace=row.workspace,
+        max_cost_usd=row.max_cost_usd,
+        model_override=row.model_override,
+        account_generation=row.account_generation,
     )
 
 
@@ -117,20 +126,39 @@ class SqlAlchemySubscriptionStore(SubscriptionStore):
         subscription_id: str,
         *,
         user_id: str | None,
-        conversation_id: str,
+        conversation_id: str | None = None,
         source: str,
         kind: str,
         match: dict[str, Any] | None = None,
         note: str | None = None,
+        agent_id: str | None = None,
+        prompt_template: str | None = None,
+        execution_target: str | None = None,
+        host_id: str | None = None,
+        workspace: str | None = None,
+        max_cost_usd: float | None = None,
+        model_override: str | None = None,
     ) -> Subscription:
-        """Insert a new active subscription."""
+        """Insert a new active subscription targeting a conversation or an agent."""
+        if (conversation_id is None) == (agent_id is None):
+            raise ValueError("exactly one of conversation_id and agent_id must be set")
+        launch = agent_id is not None
         created_at = now_epoch()
 
         def write(session: Session) -> Subscription:
+            generation = require_active_account(session, user_id)
             row = SqlSubscription(
                 id=subscription_id,
                 user_id=user_id,
                 conversation_id=conversation_id,
+                agent_id=agent_id,
+                prompt_template=prompt_template if launch else None,
+                execution_target=(execution_target or "connected_host") if launch else None,
+                host_id=host_id if launch else None,
+                workspace=workspace if launch else None,
+                max_cost_usd=max_cost_usd if launch else None,
+                model_override=model_override if launch else None,
+                account_generation=generation,
                 source=source,
                 kind=kind,
                 match=json.dumps(match or {}, sort_keys=True),

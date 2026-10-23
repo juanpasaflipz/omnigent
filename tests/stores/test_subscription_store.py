@@ -202,3 +202,112 @@ def test_malformed_match_json_decodes_to_empty_filter(
     row = store.get(subscription_id)
     assert row is not None
     assert row.match == {}
+
+
+# ── launch subscriptions (v2) ────────────────────────────────────────────────
+
+
+def test_launch_subscription_round_trips_launch_fields(
+    store: SqlAlchemySubscriptionStore,
+) -> None:
+    created = store.create(
+        _uid("launch_1"),
+        user_id="alice@example.com",
+        agent_id=_uid("agent_1"),
+        source="github",
+        kind="issues.opened",
+        match={"repo": "acme/api"},
+        note="new issues",
+        prompt_template="Triage {fields_json}",
+        execution_target="managed_sandbox",
+        max_cost_usd=2.5,
+        model_override="claude-opus-4-7",
+    )
+    fetched = store.get(created.id)
+    assert fetched == created
+    assert fetched is not None
+    assert fetched.conversation_id is None
+    assert fetched.agent_id == _uid("agent_1")
+    assert fetched.launches_session
+    assert fetched.prompt_template == "Triage {fields_json}"
+    assert fetched.execution_target == "managed_sandbox"
+    assert fetched.host_id is None
+    assert fetched.workspace is None
+    assert fetched.max_cost_usd == 2.5
+    assert fetched.model_override == "claude-opus-4-7"
+    # The bus hot path returns launch rows alongside wake rows.
+    assert [s.id for s in store.list_active("github", "issues.opened")] == [created.id]
+
+
+def test_launch_subscription_defaults_to_connected_host_and_keeps_pins(
+    store: SqlAlchemySubscriptionStore,
+) -> None:
+    created = store.create(
+        _uid("launch_2"),
+        user_id=None,
+        agent_id=_uid("agent_2"),
+        source="webhook",
+        kind="deploy.finished",
+        prompt_template="Check the deploy",
+        host_id=_uid("host_2"),
+        workspace="/repo",
+    )
+    assert created.execution_target == "connected_host"
+    assert created.host_id == _uid("host_2")
+    assert created.workspace == "/repo"
+
+
+def test_wake_subscription_ignores_launch_fields(store: SqlAlchemySubscriptionStore) -> None:
+    created = store.create(
+        _uid("wake_launch_fields"),
+        user_id="alice@example.com",
+        conversation_id=_uid("conv_x"),
+        source="github",
+        kind="push",
+        prompt_template="ignored",
+        execution_target="managed_sandbox",
+        max_cost_usd=9.0,
+    )
+    assert not created.launches_session
+    assert created.prompt_template is None
+    assert created.execution_target is None
+    assert created.max_cost_usd is None
+
+
+@pytest.mark.parametrize("both", [True, False], ids=["both", "neither"])
+def test_create_requires_exactly_one_target(
+    store: SqlAlchemySubscriptionStore, both: bool
+) -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        store.create(
+            _uid("bad_target"),
+            user_id="alice@example.com",
+            conversation_id=_uid("conv_bad") if both else None,
+            agent_id=_uid("agent_bad") if both else None,
+            source="github",
+            kind="push",
+        )
+
+
+def test_database_enforces_exactly_one_target(store: SqlAlchemySubscriptionStore) -> None:
+    """``ck_subscriptions_one_target`` backs the store check at the DB layer."""
+    import sqlalchemy as sa
+
+    from omnigent.db.db_models import SqlSubscription
+
+    with pytest.raises(sa.exc.IntegrityError), store._session("test_raw_insert") as session:
+        session.add(
+            SqlSubscription(
+                id=_uid("raw_no_target"),
+                user_id=None,
+                conversation_id=None,
+                agent_id=None,
+                source="github",
+                kind="push",
+                match="{}",
+                state="active",
+                fire_count=0,
+                created_at=1,
+            )
+        )
+        session.flush()

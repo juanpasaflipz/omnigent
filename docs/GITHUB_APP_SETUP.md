@@ -88,6 +88,12 @@ Omnigent's connect flow does **not** consume webhooks. **Uncheck "Active"** unde
 Webhook (leaving the URL blank). This avoids GitHub retrying deliveries to a
 non-existent endpoint.
 
+If you also want agents to wake on (or launch sessions from) GitHub events
+through [subscriptions](SUBSCRIPTIONS.md), leave this step for now and follow
+[Webhook for subscriptions](#webhook-for-subscriptions) once the App exists. One
+App-level webhook then covers every repository the App is installed on, instead
+of a webhook per repository.
+
 ![Webhook: Active unchecked](images/github-app/03-webhook.png)
 
 ## Step 4 — Permissions
@@ -200,3 +206,62 @@ nor `OMNIGENT_DOMAIN`), the feature logs a warning and **stays disabled**.
 
 If Step 3 returns `404` on a private repo while Steps 1–2 succeeded, the App is
 connected but **not installed** on that repo's owner — revisit [Step 7](#step-7--install-the-app).
+
+---
+
+## Webhook for subscriptions
+
+Optional. [Subscriptions](SUBSCRIPTIONS.md) let an agent wake, or launch a new
+session, when a GitHub event arrives: an issue opened, CI going red on a pull
+request, a push. The App can deliver those events for every repository it is
+installed on, so you do not have to add a webhook to each repository by hand.
+
+1. **Turn on subscriptions on the server.** Start it with
+   `OMNIGENT_FEATURES=subscriptions` (the ingest route only mounts behind that
+   flag) and pick a webhook secret, e.g. `openssl rand -hex 32`. Set it on the
+   server as `OMNIGENT_GITHUB_WEBHOOK_SECRET`. It is read on every delivery, so
+   rotating it needs no restart; while it is unset the endpoint answers `503`
+   and accepts nothing.
+2. **Enable the App webhook.** In the App's settings (**Settings → Developer
+   settings → GitHub Apps → *your App* → General**), under **Webhook**:
+   - **Active:** checked.
+   - **Webhook URL:** `https://<your-server>/v1/events/github`
+   - **Webhook secret:** the same value as `OMNIGENT_GITHUB_WEBHOOK_SECRET`.
+     The server verifies every delivery's `X-Hub-Signature-256` against it and
+     rejects a mismatch with `401`.
+   - **SSL verification:** enabled.
+3. **Add the read permissions the events need.** Under **Permissions & events →
+   Repository permissions**, in addition to the ones from
+   [Step 4](#step-4--permissions):
+
+   | Permission | Access | Why |
+   | --- | --- | --- |
+   | **Checks** | **Read-only** | Required to subscribe to **Check runs** and **Check suites**. |
+   | **Issues** | **Read-only** | Required to subscribe to **Issues** and **Issue comments**. |
+
+   **Pull requests** and **Contents** (for **Pushes**) are already granted by
+   Step 4. Read-only is enough for every event here; nothing in the webhook
+   path writes to GitHub.
+4. **Subscribe to events.** On the same page, under **Subscribe to events**,
+   tick:
+   - **Issues**
+   - **Issue comment**
+   - **Pull request**
+   - **Check run**
+   - **Check suite**
+   - **Push**
+
+   Any other event is acknowledged with `202` and `matched: 0` but never
+   published, so ticking more is harmless.
+5. **Accept the new permissions.** Changing an App's permissions asks every
+   installation's owner to approve them (**Settings → Applications → Installed
+   GitHub Apps → *your App***). Until an owner accepts, GitHub keeps sending
+   only the events the old permissions allowed for that installation.
+6. **Check a delivery.** Under **Advanced → Recent Deliveries**, redeliver the
+   `ping` or open an issue in an installed repository. A `202` with
+   `{"matched": 0, "delivered": 0, "suppressed": 0}` means the signature
+   verified and nothing was subscribed yet; `401` means the secret does not
+   match; `404` means the server is not running with the `subscriptions` flag.
+
+How the payloads are normalized into a `kind` and `fields`, and how an agent
+subscribes to them, is in [SUBSCRIPTIONS.md](SUBSCRIPTIONS.md).

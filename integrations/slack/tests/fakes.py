@@ -240,6 +240,10 @@ OMNIGENT_ENDPOINTS: list[tuple[str, str, bool]] = [
     # OIDC ticket login (oauth.py, oidc mode): start a CLI-login ticket, then poll.
     ("POST", "/auth/cli-login", False),
     ("GET", "/auth/cli-poll", False),
+    # Event forwarding (OMNIGENT_SLACK_FORWARD_EVENTS). Mounted only behind the
+    # server's ``subscriptions`` release flag, so the flag-off openapi.json the
+    # drift test reads does not list it.
+    ("POST", "/v1/events/webhook", False),
 ]
 
 # Response fields the client actually reads off the two richest documented

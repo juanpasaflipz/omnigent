@@ -4747,8 +4747,21 @@ async def _execute_scheduled_task_tool(
 
 
 # Fields the subscribe tool forwards to POST /v1/subscriptions. The runner
-# adds ``conversation_id`` itself so the model never names a session.
-_SUBSCRIPTION_CREATE_FIELDS = ("source", "kind", "match", "note")
+# adds ``conversation_id`` itself so the model never names a session; a
+# launch subscription (``agent_id``) targets the agent instead.
+_SUBSCRIPTION_CREATE_FIELDS = (
+    "source",
+    "kind",
+    "match",
+    "note",
+    "agent_id",
+    "prompt_template",
+    "execution_target",
+    "host_id",
+    "workspace",
+    "max_cost_usd",
+    "model_override",
+)
 _SUBSCRIPTION_ID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
 
@@ -4772,12 +4785,13 @@ async def _execute_subscription_tool(
     The runner has no in-process SubscriptionStore, so these tools proxy the
     Omnigent server's ``/v1/subscriptions`` REST endpoints over
     ``server_client`` — same posture as :func:`_execute_scheduled_task_tool`.
-    ``sys_subscribe`` always targets the calling session: the runner fills in
-    ``conversation_id`` from the dispatch context. No approval gate applies,
-    unlike ``sys_scheduled_task_create``, because a subscription can only wake
-    the caller's own session rather than launch unattended work elsewhere.
-    Ownership, conversation access and filter validation are enforced
-    server-side.
+    A plain ``sys_subscribe`` targets the calling session: the runner fills in
+    ``conversation_id`` from the dispatch context, and no approval applies.
+    With ``agent_id`` it creates a launch subscription instead (no
+    ``conversation_id``); that call was already approved by the
+    ``ask_on_scheduled_task_change`` policy before it reached here, exactly
+    like ``sys_scheduled_task_create``. Ownership, conversation / agent
+    access and filter validation are enforced server-side.
 
     :param tool_name: One of the ``sys_subscri*`` names.
     :param arguments: JSON-encoded arguments string from the LLM.
@@ -4797,10 +4811,12 @@ async def _execute_subscription_tool(
         if tool_name == "sys_subscription_list":
             resp = await server_client.get("/v1/subscriptions", timeout=30.0)
         elif tool_name == "sys_subscribe":
-            if not conversation_id:
-                return json.dumps({"error": f"{tool_name} requires a session context"})
             payload = {k: args[k] for k in _SUBSCRIPTION_CREATE_FIELDS if k in args}
-            payload["conversation_id"] = conversation_id
+            if payload.get("agent_id") is None:
+                if not conversation_id:
+                    return json.dumps({"error": f"{tool_name} requires a session context"})
+                payload.pop("agent_id", None)
+                payload["conversation_id"] = conversation_id
             resp = await server_client.post("/v1/subscriptions", json=payload, timeout=30.0)
         elif tool_name == "sys_unsubscribe":
             subscription_id = args.get("subscription_id")

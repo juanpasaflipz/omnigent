@@ -43,23 +43,44 @@ class SubscriptionStore(ABC):
         subscription_id: str,
         *,
         user_id: str | None,
-        conversation_id: str,
+        conversation_id: str | None = None,
         source: str,
         kind: str,
         match: dict[str, Any] | None = None,
         note: str | None = None,
+        agent_id: str | None = None,
+        prompt_template: str | None = None,
+        execution_target: str | None = None,
+        host_id: str | None = None,
+        workspace: str | None = None,
+        max_cost_usd: float | None = None,
+        model_override: str | None = None,
     ) -> Subscription:
         """
         Insert a new active subscription.
 
+        Exactly one of ``conversation_id`` (wake an existing session) and
+        ``agent_id`` (launch a new session per event) must be set. The launch
+        fields only apply to an ``agent_id`` row. The owner's account
+        registration is captured on the row so a launch for a rotated or
+        deleted registration starts nothing.
+
         :param subscription_id: Pre-generated unique id (bare 32-char hex UUID).
         :param user_id: Owner the wake is delivered as; ``None`` in single-user mode.
         :param conversation_id: Session the wake notice is posted into.
+        :param agent_id: Agent a launch subscription starts sessions with.
+        :param prompt_template: Launch only: first-message template.
+        :param execution_target: Launch only: ``connected_host``/``managed_sandbox``.
+        :param host_id: Launch only: pinned connected host.
+        :param workspace: Launch only: pinned workspace.
+        :param max_cost_usd: Launch only: per-session cost cap in USD.
+        :param model_override: Launch only: model override.
         :param source: Event source, e.g. ``"github"`` or ``"webhook"``.
         :param kind: Normalized event kind, e.g. ``"check_run.completed"``.
         :param match: Field filter the event must satisfy; ``None`` means any event.
         :param note: Optional label echoed in the wake notice.
         :returns: The newly created :class:`Subscription`.
+        :raises ValueError: Unless exactly one target is set.
         """
         ...
 
