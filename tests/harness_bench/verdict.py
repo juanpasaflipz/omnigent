@@ -92,11 +92,17 @@ class ProbeResult:
     :param detail: Optional structured evidence (event-type counts, the
         blocked reason, the effective model) for debugging or JSON
         export. Never rendered in the compact matrix.
+    :param measurement: Optional numeric result for measuring (rather than
+        pass/fail) probes, e.g. ``{"cost_per_solved_task_usd": 0.004}``.
+        Rendered in a Measurements section and exported as the cell's
+        ``measurement`` JSON key; ``None`` (the default) renders nothing, so
+        probes that only report a verdict are unaffected.
     """
 
     verdict: Verdict
     note: str = ""
     detail: dict[str, Any] = field(default_factory=dict)
+    measurement: dict[str, Any] | None = None
 
     @classmethod
     def skipped(cls, reason: str) -> ProbeResult:

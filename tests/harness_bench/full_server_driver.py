@@ -18,6 +18,8 @@ from tests.harness_bench.driver import (
     ForkResult,
     TurnResult,
     fill_snapshot_cost,
+    fill_snapshot_usage_delta,
+    settled_usage_snapshot,
 )
 from tests.harness_bench.full_server import (
     _DENY_REASON,
@@ -31,6 +33,7 @@ from tests.harness_bench.session_items import (
     assistant_text,
     contains_user_text,
     function_calls,
+    item_role,
     reasoning_item_count,
     tool_output_states,
 )
@@ -120,6 +123,9 @@ class FullServerDriver:
     async def run_basic_turn(self, marker: str) -> TurnResult:
         prompt = f"Reply with exactly the literal string {marker} and nothing else."
         return await asyncio.to_thread(self.run_turn, prompt)
+
+    async def run_task_turn(self, prompt: str) -> TurnResult:
+        return await asyncio.to_thread(self.task_probe_turn, prompt)
 
     async def run_streaming_turn(self) -> TurnResult:
         return await asyncio.to_thread(self.streaming_probe_turn)
@@ -473,6 +479,33 @@ class FullServerDriver:
         assert self._session_id is not None
         return self._run_turn_on_session(self._session_id, prompt, timeout=timeout)
 
+    def task_probe_turn(self, prompt: str, *, timeout: float = 180.0) -> TurnResult:
+        """Drive one task turn and attribute only its own reply and usage.
+
+        The driver reuses one session across probes, so the reply is read from
+        assistant items added by this turn, and usage is the difference between
+        the session snapshots taken before and after it.
+        """
+        assert self._client is not None and self._session_id is not None
+        sid = self._session_id
+        before = self._snapshot(sid)
+        baseline = _assistant_items(before)
+        result = self._run_turn_on_session(sid, prompt, timeout=timeout)
+        if not result.completed:
+            return result
+        after = settled_usage_snapshot(
+            lambda: self._snapshot(sid), before, poll_interval=_POLL_INTERVAL_S
+        )
+        result.text = assistant_text(_assistant_items(after)[len(baseline) :])
+        fill_snapshot_usage_delta(result, before, after)
+        return result
+
+    def _snapshot(self, sid: str) -> dict[str, Any]:
+        assert self._client is not None
+        response = self._client.get(f"/v1/sessions/{sid}")
+        response.raise_for_status()
+        return response.json()
+
     def _run_turn_on_session(self, sid: str, prompt: str, *, timeout: float) -> TurnResult:
         """Drive one basic turn on *sid* and return its terminal result."""
         assert self._client is not None
@@ -494,6 +527,10 @@ class FullServerDriver:
             timeout=timeout,
             fill_cost=True,
         )
+
+
+def _assistant_items(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    return [item for item in snapshot.get("items", []) if item_role(item) == "assistant"]
 
 
 def _scan_tool_items(items: list[dict[str, Any]], result: TurnResult) -> None:

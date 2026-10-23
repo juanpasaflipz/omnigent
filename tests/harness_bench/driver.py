@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,7 @@ from typing import Any
 import httpx
 
 from omnigent.runtime.harnesses.process_manager import HarnessProcessManager
+from omnigent.server.usage_efficiency import TokenCounters, counters_from_usage
 from tests.e2e._harness_probes import cli_unavailable_reason
 from tests.harness_bench.profile import BenchProfile
 from tests.harness_bench.runtime_env import bench_creds_skip_reason, resolve_bench_env
@@ -157,6 +160,13 @@ class TurnResult:
     total_cost_usd: float | None = None
     elicitation_requested: bool = False
     tool_call_allowed: bool = False
+    # Per-turn token counters in the ``session_usage`` key shape
+    # (``input_tokens``, ``cache_read_input_tokens``, ...), so
+    # ``omnigent.server.usage_efficiency.counters_from_usage`` reads them.
+    # Filled by drivers that can attribute counters to one turn (the wrap's
+    # completed-response usage, or a snapshot delta in ``run_task_turn``);
+    # ``None`` when nothing was observed.
+    usage: dict[str, int] | None = None
 
     @property
     def reached_terminal(self) -> bool:
@@ -188,6 +198,96 @@ def fill_snapshot_cost(result: TurnResult, snapshot: dict[str, Any]) -> None:
     cost = snapshot.get("total_cost_usd")
     if isinstance(cost, (int, float)):
         result.total_cost_usd = float(cost)
+
+
+# Token counter keys copied between usage dicts; mirrors the efficiency scorecard.
+USAGE_TOKEN_KEYS: tuple[str, ...] = (
+    "input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "output_tokens",
+)
+
+
+def snapshot_usage_counters(snapshot: dict[str, Any]) -> TokenCounters:
+    """Read a session snapshot's cumulative per-model token counters.
+
+    The snapshot exposes ``usage_by_model`` (``ModelUsage`` buckets) rather than
+    flat counters, so this sums the buckets with the scorecard's own reader.
+    Cost is not read here: ``total_cost_usd`` keeps its "unpriced is ``None``"
+    meaning through :func:`fill_snapshot_cost`.
+    """
+    by_model = snapshot.get("usage_by_model")
+    if not isinstance(by_model, dict):
+        return TokenCounters()
+    # Drop explicit nulls: ModelUsage serializes unrecorded counters as None.
+    buckets = {
+        model: {k: v for k, v in bucket.items() if v is not None}
+        for model, bucket in by_model.items()
+        if isinstance(bucket, dict)
+    }
+    return counters_from_usage({"by_model": buckets})
+
+
+def fill_snapshot_usage_delta(
+    result: TurnResult, before: dict[str, Any], after: dict[str, Any]
+) -> None:
+    """Attribute the usage recorded between two snapshots of one session to *result*.
+
+    Session usage is cumulative, so a turn's own spend is ``after - before``.
+    ``total_cost_usd`` stays ``None`` when the session is still unpriced after
+    the turn, and ``total_tokens`` falls back to the snapshot's per-task
+    ``last_total_tokens`` when no per-model counters were recorded.
+    """
+    fill_snapshot_cost(result, after)
+    if result.total_cost_usd is not None:
+        prior = before.get("total_cost_usd")
+        if isinstance(prior, (int, float)):
+            result.total_cost_usd = max(result.total_cost_usd - float(prior), 0.0)
+    start, end = snapshot_usage_counters(before), snapshot_usage_counters(after)
+    delta = {
+        "input_tokens": max(end.input_tokens - start.input_tokens, 0),
+        "cache_read_input_tokens": max(end.cache_read_tokens - start.cache_read_tokens, 0),
+        "cache_creation_input_tokens": max(
+            end.cache_creation_tokens - start.cache_creation_tokens, 0
+        ),
+        "output_tokens": max(end.output_tokens - start.output_tokens, 0),
+    }
+    if any(delta.values()):
+        result.usage = delta
+        result.total_tokens = sum(delta.values())
+
+
+def usage_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    """Whether a session's recorded cost or token counters moved between snapshots."""
+    return before.get("total_cost_usd") != after.get("total_cost_usd") or snapshot_usage_counters(
+        before
+    ) != snapshot_usage_counters(after)
+
+
+# Usage can land just after a turn settles (native usage reporters post it
+# asynchronously); wait at most this long for the snapshot to move.
+USAGE_SETTLE_S = 5.0
+
+
+def settled_usage_snapshot(
+    fetch: Callable[[], dict[str, Any]],
+    before: dict[str, Any],
+    *,
+    poll_interval: float,
+    settle_s: float = USAGE_SETTLE_S,
+) -> dict[str, Any]:
+    """Return the first snapshot whose usage moved past *before*, or the last one read.
+
+    A harness that forwards no usage costs one *settle_s* wait per call, then
+    the unchanged snapshot is returned and the caller sees no usage.
+    """
+    deadline = time.monotonic() + settle_s
+    snapshot = fetch()
+    while not usage_changed(before, snapshot) and time.monotonic() < deadline:
+        time.sleep(poll_interval)
+        snapshot = fetch()
+    return snapshot
 
 
 class SdkInprocDriver:
@@ -288,6 +388,9 @@ class SdkInprocDriver:
         return await self.run_turn(
             f"Reply with exactly the literal string {marker} and nothing else."
         )
+
+    async def run_task_turn(self, prompt: str) -> TurnResult:
+        return await self.run_turn(prompt)
 
     async def run_streaming_turn(self) -> TurnResult:
         return await self.run_turn(_STREAM_PROMPT)
@@ -401,6 +504,13 @@ class SdkInprocDriver:
                         cost = usage.get("cost_usd")
                         if isinstance(cost, (int, float)):
                             result.total_cost_usd = float(cost)
+                        counters = {
+                            key: usage[key]
+                            for key in USAGE_TOKEN_KEYS
+                            if isinstance(usage.get(key), int)
+                        }
+                        if any(counters.values()):
+                            result.usage = counters
                     elif etype == "response.cancelled":
                         result.cancelled = True
                     elif etype == "response.failed":

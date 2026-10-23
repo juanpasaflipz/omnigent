@@ -123,3 +123,20 @@ client-side from `by_harness`). Rates the server could not compute print as
 - **Compare harnesses, not just models.** The same model behind two harnesses
   can show very different cache hit rates; the harness decides what is
   cacheable.
+
+## Comparing harnesses on cost
+
+The scorecard describes what your own sessions cost, which mixes harness
+efficiency with what each session was asked to do. To compare harnesses on
+the same work, use the harness bench's **Cost per solved task** probe: it runs
+a fixed three-task suite through each harness, checks the answers, and reports
+`cost_per_solved_task_usd`, `tokens_per_solved_task` and `cache_hit_rate`
+(computed with the formulas above) for each one.
+
+```sh
+python -m tests.harness_bench --live --dimension cost_per_solved_task \
+  --harness claude-native --harness codex-native --json --report cost.json
+```
+
+See [Cost per solved task](harness-bench-design.md#cost-per-solved-task) for
+the task suite, the verdicts, and how to read the number.

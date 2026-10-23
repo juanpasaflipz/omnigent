@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from tests.harness_bench.verdict import Verdict
 
@@ -48,6 +48,7 @@ class ProbeFinished:
     title: str
     verdict: Verdict
     note: str = ""
+    measurement: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

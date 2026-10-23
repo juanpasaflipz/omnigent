@@ -59,6 +59,7 @@ class CellResult:
     verdict: Verdict
     note: str = ""
     detail: dict = field(default_factory=dict)
+    measurement: dict | None = None
 
     @property
     def is_drift(self) -> bool:
@@ -144,6 +145,7 @@ def _cell(probe: CapabilityProbe, profile: BenchProfile, observed: ProbeResult) 
         verdict=reconcile(observed.verdict, declared),
         note=observed.note,
         detail=observed.detail,
+        measurement=observed.measurement,
     )
 
 
@@ -303,7 +305,12 @@ async def run_harness(
             _emit(
                 sink,
                 ProbeFinished(
-                    profile.harness, probe.name, probe.title, observed.verdict, observed.note
+                    profile.harness,
+                    probe.name,
+                    probe.title,
+                    observed.verdict,
+                    observed.note,
+                    measurement=observed.measurement,
                 ),
             )
             cell = _cell(probe, profile, observed)

@@ -67,6 +67,7 @@ class _RichLiveSink:
         selected = probes if probes is not None else ALL_PROBES
         self._dimensions = [p.title for p in selected]
         self._dim_by_name = {p.name: p.title for p in selected}
+        self._probe_by_name = {p.name: p for p in selected}
         # harness → {dim_title: markup}; insertion order = display order.
         self._rows: dict[str, dict[str, str]] = {}
         self._transport: dict[str, str] = {}  # harness → resolved transport label
@@ -112,10 +113,17 @@ class _RichLiveSink:
             row = self._rows.setdefault(event.harness, self._blank_row())
             row[self._dim_by_name.get(event.probe, event.title)] = _RUNNING
         elif isinstance(event, ProbeFinished):
+            from rich.markup import escape
+
             row = self._rows.setdefault(event.harness, self._blank_row())
-            row[self._dim_by_name.get(event.probe, event.title)] = _VERDICT_GLYPH.get(
-                event.verdict, _PENDING
-            )
+            cell = _VERDICT_GLYPH.get(event.verdict, _PENDING)
+            probe = self._probe_by_name.get(event.probe)
+            if event.measurement is not None and probe is not None:
+                headline = probe.headline(event.measurement)
+                if headline:
+                    # Measuring probes show their number beside the glyph.
+                    cell = f"{cell} [dim]{escape(headline)}[/dim]"
+            row[self._dim_by_name.get(event.probe, event.title)] = cell
         # HarnessFinished needs no cell change (all its probes already landed).
         self._live.update(self._render())
 

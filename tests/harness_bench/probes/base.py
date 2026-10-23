@@ -10,6 +10,7 @@ a probe module and listing it in :data:`tests.harness_bench.probes.ALL_PROBES`
 from __future__ import annotations
 
 import abc
+from typing import Any
 
 from tests.harness_bench.profile import BenchProfile
 from tests.harness_bench.transport import Driver
@@ -34,6 +35,13 @@ class CapabilityProbe(abc.ABC):
     title: str
     priority: Priority
     applies_to: Applicability = Applicability.BOTH
+
+    def headline(self, measurement: dict[str, Any]) -> str:
+        """Return a short label for *measurement* in the live grid cell.
+
+        Only measuring probes override this; the default adds nothing.
+        """
+        return ""
 
     @abc.abstractmethod
     async def run(self, driver: Driver, profile: BenchProfile) -> ProbeResult:

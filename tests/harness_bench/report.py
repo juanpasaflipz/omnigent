@@ -151,6 +151,10 @@ def render_table(
     if notes:
         out += ["", "Notes:", *notes]
 
+    measurements = _measurement_lines(matrix)
+    if measurements:
+        out += ["", "Measurements:", *measurements]
+
     skips = _skip_lines(matrix)
     if skips:
         out += ["", "Skipped harnesses:", *skips]
@@ -170,6 +174,32 @@ def _note_lines(matrix: BenchMatrix) -> list[str]:
                 lines.append(
                     f"- {report.profile.harness} / {cell.title}: {cell.verdict.glyph} {cell.note}"
                 )
+    return lines
+
+
+def _format_measurement_value(value: Any) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
+
+
+def _measurement_lines(matrix: BenchMatrix) -> list[str]:
+    """List every cell that carries a measurement, as ``key=value`` pairs.
+
+    Only measuring probes set one, so a run without them adds no section.
+    """
+    lines: list[str] = []
+    for report in matrix.reports:
+        for cell in report.cells:
+            if not cell.measurement:
+                continue
+            pairs = ", ".join(
+                f"{key}={_format_measurement_value(value)}"
+                for key, value in cell.measurement.items()
+            )
+            lines.append(f"- {report.profile.harness} / {cell.title}: {pairs}")
     return lines
 
 
@@ -203,6 +233,10 @@ def render_markdown(matrix: BenchMatrix, *, declared: bool = False) -> str:
     notes = _note_lines(matrix)
     if notes:
         out += ["", "## Notes", "", *notes]
+
+    measurements = _measurement_lines(matrix)
+    if measurements:
+        out += ["", "## Measurements", "", *measurements]
 
     skips = _skip_lines(matrix)
     if skips:
@@ -284,15 +318,20 @@ def _report_json(report: HarnessReport) -> dict[str, Any]:
         "auth": report.profile.auth,
         "implementation": report.profile.implementation,
         "skipped_reason": report.skipped_reason,
-        "cells": [
-            {
-                "dimension": c.probe_name,
-                "priority": c.priority.value,
-                "observed": c.observed.value,
-                "declared": c.declared.value,
-                "verdict": c.verdict.value,
-                "note": c.note,
-            }
-            for c in report.cells
-        ],
+        "cells": [_cell_json(c) for c in report.cells],
     }
+
+
+def _cell_json(cell: CellResult) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "dimension": cell.probe_name,
+        "priority": cell.priority.value,
+        "observed": cell.observed.value,
+        "declared": cell.declared.value,
+        "verdict": cell.verdict.value,
+        "note": cell.note,
+    }
+    # Present only for measuring probes, so other cells keep their exact shape.
+    if cell.measurement is not None:
+        payload["measurement"] = cell.measurement
+    return payload
