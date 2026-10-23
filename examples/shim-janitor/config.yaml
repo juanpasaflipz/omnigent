@@ -50,11 +50,10 @@ prompt: |
 
   ## 2. Select what to retire
 
-  Work only on entries with `"retirable": true`. Skip a shim whose
-  `last_fired_at` is null AND whose `added_in` is the current version in
-  `VERSION` (it may simply not have had time to fire); mention it in your
-  summary instead. If nothing is retirable, say so and stop without opening a
-  pull request.
+  Work only on entries with `"retirable": true`. The server marks a shim
+  retirable only after observing it for the whole window since
+  `first_seen_at`, so a fresh deployment reports none; trust the flag. If
+  nothing is retirable, say so and stop without opening a pull request.
 
   ## 3. Remove each retirable shim
 

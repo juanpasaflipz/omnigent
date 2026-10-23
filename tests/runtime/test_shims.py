@@ -14,6 +14,7 @@ from omnigent.runtime import shims
 from omnigent.runtime.shims import (
     Shim,
     firings_path,
+    first_seen_path,
     register_shim,
     reset_for_tests,
     shim_fired,
@@ -177,7 +178,7 @@ def test_snapshot_ignores_log_lines_for_unregistered_shims() -> None:
 
 
 def test_snapshot_retirable_uses_idle_days_against_injected_now() -> None:
-    """A shim is retirable when it never fired or last fired before the idle window."""
+    """Observed for the window and quiet in it means retirable; a firing proves observation."""
     never = _register("test.never")
     recent = _register("test.recent")
     stale = _register("test.stale")
@@ -191,7 +192,8 @@ def test_snapshot_retirable_uses_idle_days_against_injected_now() -> None:
         encoding="utf-8",
     )
 
-    assert _status(never.name, idle_days=30, now=now).retirable is True
+    # First seen just now: a never-fired shim is not retirable yet.
+    assert _status(never.name, idle_days=30, now=now).retirable is False
     assert _status(never.name, idle_days=30, now=now).last_fired_at is None
     assert _status(recent.name, idle_days=30, now=now).retirable is False
     assert _status(stale.name, idle_days=30, now=now).retirable is True
@@ -236,3 +238,31 @@ def test_reset_for_tests_clears_registry_and_counters() -> None:
     firings_path().unlink()
     _register()
     assert _status("test.example").fire_count == 0
+
+
+def test_fresh_deployment_reports_nothing_retirable_until_the_window_passes() -> None:
+    """A never-fired shim becomes retirable only after a full window of observation."""
+    shim = _register("test.fresh")
+    start = 1_800_000_000.0
+
+    first = _status(shim.name, idle_days=30, now=start)
+    assert first.retirable is False
+    assert first.first_seen_at == "2027-01-15T08:00:00+00:00"
+    assert _status(shim.name, idle_days=30, now=start + 29 * _DAY_SECONDS).retirable is False
+    # The first-seen time is persisted, not reset by later snapshots.
+    assert _status(shim.name, idle_days=30, now=start + 30 * _DAY_SECONDS).retirable is True
+    assert json.loads(first_seen_path().read_text(encoding="utf-8")) == {shim.name: start}
+
+
+def test_unwritable_first_seen_record_never_makes_a_shim_retirable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the record cannot be read or written, every shim counts as just seen."""
+    shim = _register("test.unwritable")
+    first_seen_path().parent.mkdir(parents=True, exist_ok=True)
+    first_seen_path().mkdir()  # a directory where the file should be: reads and writes fail
+    for days in (0, 365):
+        assert (
+            _status(shim.name, idle_days=30, now=1_800_000_000.0 + days * _DAY_SECONDS).retirable
+            is False
+        )

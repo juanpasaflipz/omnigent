@@ -46,7 +46,10 @@ class ShimStatusResponse(BaseModel):
         ``None`` when it never fired.
     :param by_model: Firings per model id; ``"unknown"`` when the call site has
         no model in scope.
-    :param retirable: ``True`` when the shim has been idle for ``idle_days``.
+    :param retirable: ``True`` when the deployment has observed the shim for at
+        least ``idle_days`` and it has not fired within that window.
+    :param first_seen_at: ISO-8601 UTC timestamp from which the deployment has
+        observed the shim.
     """
 
     name: str
@@ -59,6 +62,7 @@ class ShimStatusResponse(BaseModel):
     last_fired_at: str | None
     by_model: dict[str, int]
     retirable: bool
+    first_seen_at: str | None = None
 
 
 class ShimReport(BaseModel):

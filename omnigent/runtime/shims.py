@@ -35,6 +35,9 @@ FIRED_METRIC_NAME = "omnigent.shim.fired"
 
 #: Relative location of the firing log under the runtime data dir.
 FIRINGS_RELATIVE_PATH = Path("shims") / "firings.jsonl"
+# When this deployment first saw each shim registered. Without it a fresh
+# install, where nothing has fired yet, would report every shim as retirable.
+FIRST_SEEN_RELATIVE_PATH = Path("shims") / "first_seen.json"
 
 
 @dataclass(frozen=True)
@@ -74,8 +77,10 @@ class ShimStatus:
     :param last_fired_at: ISO-8601 UTC timestamp of the latest firing, or
         ``None`` when the shim has never fired.
     :param by_model: Firings per model id; unknown models are keyed ``"unknown"``.
-    :param retirable: ``True`` when the shim never fired or has been idle longer
-        than the snapshot's ``idle_days``.
+    :param retirable: ``True`` when the deployment has observed the shim for at
+        least ``idle_days`` and it has not fired within that window.
+    :param first_seen_at: ISO-8601 UTC timestamp of when this deployment first
+        saw the shim registered.
     """
 
     name: str
@@ -88,6 +93,7 @@ class ShimStatus:
     last_fired_at: str | None
     by_model: dict[str, int] = field(default_factory=dict)
     retirable: bool = False
+    first_seen_at: str | None = None
 
 
 @dataclass
@@ -329,6 +335,54 @@ def _merge_records(memory: _FiringRecord, logged: _FiringRecord | None) -> _Firi
     return merged
 
 
+def first_seen_path() -> Path:
+    """
+    Return the first-seen record path under the runtime data dir.
+
+    :returns: ``<data dir>/shims/first_seen.json``.
+    """
+    return data_dir() / FIRST_SEEN_RELATIVE_PATH
+
+
+def _first_seen(names: list[str], reference: float) -> dict[str, float]:
+    """
+    Return when each shim was first seen, recording ``reference`` for new names.
+
+    A read or write failure treats the missing names as seen at ``reference``,
+    so a broken data dir can delay retirement but never cause it.
+
+    :param names: Registered shim names.
+    :param reference: Epoch seconds to record for names seen for the first time.
+    :returns: First-seen epoch seconds per name.
+    """
+    path = first_seen_path()
+    recorded: dict[str, float] = {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            recorded = {
+                str(name): float(value)
+                for name, value in raw.items()
+                if isinstance(value, int | float)
+            }
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError):
+        _logger.debug("unreadable shim first-seen record at %s", path, exc_info=True)
+    missing = [name for name in names if name not in recorded]
+    if not missing:
+        return recorded
+    updated = {**recorded, **dict.fromkeys(missing, reference)}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        staging = path.with_suffix(".json.tmp")
+        staging.write_text(json.dumps(updated, sort_keys=True), encoding="utf-8")
+        staging.replace(path)
+    except OSError:
+        _logger.debug("could not persist shim first-seen record at %s", path, exc_info=True)
+    return updated
+
+
 def _iso_utc(epoch_seconds: float) -> str:
     """Format epoch seconds as an ISO-8601 UTC timestamp."""
     return datetime.fromtimestamp(epoch_seconds, tz=UTC).isoformat()
@@ -343,7 +397,7 @@ def snapshot(*, idle_days: int = 30, now: float | None = None) -> list[ShimStatu
     data dir), so the server can report a shim that only ever fires in the
     runner.
 
-    :param idle_days: Days without a firing after which a shim is ``retirable``.
+    :param idle_days: Days a shim must be observed without firing to be ``retirable``.
     :param now: Epoch seconds to measure idleness against; defaults to the wall clock.
     :returns: One :class:`ShimStatus` per registered shim, in registration order.
     """
@@ -353,11 +407,18 @@ def snapshot(*, idle_days: int = 30, now: float | None = None) -> list[ShimStatu
     with _lock:
         shims = list(_registry.values())
         memory = {name: _records.get(name, _FiringRecord()) for name in _registry}
+    first_seen = _first_seen([shim.name for shim in shims], reference)
     statuses: list[ShimStatus] = []
     for shim in shims:
         merged = _merge_records(memory[shim.name], logged.get(shim.name))
         last_fired = merged.last_fired
-        retirable = last_fired is None or (reference - last_fired) > idle_seconds
+        # A firing proves the shim was observed then, even before first-seen existed.
+        observed_since = first_seen.get(shim.name, reference)
+        if last_fired is not None:
+            observed_since = min(observed_since, last_fired)
+        observed_long_enough = reference - observed_since >= idle_seconds
+        quiet = last_fired is None or (reference - last_fired) > idle_seconds
+        retirable = observed_long_enough and quiet
         statuses.append(
             ShimStatus(
                 **asdict(shim),
@@ -365,6 +426,7 @@ def snapshot(*, idle_days: int = 30, now: float | None = None) -> list[ShimStatu
                 last_fired_at=None if last_fired is None else _iso_utc(last_fired),
                 by_model=dict(sorted(merged.by_model.items())),
                 retirable=retirable,
+                first_seen_at=_iso_utc(observed_since),
             )
         )
     return statuses
@@ -381,9 +443,11 @@ def reset_for_tests() -> None:
 __all__ = [
     "FIRED_METRIC_NAME",
     "FIRINGS_RELATIVE_PATH",
+    "FIRST_SEEN_RELATIVE_PATH",
     "Shim",
     "ShimStatus",
     "firings_path",
+    "first_seen_path",
     "register_shim",
     "registered_shims",
     "reset_for_tests",

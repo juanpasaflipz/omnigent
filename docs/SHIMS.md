@@ -82,7 +82,8 @@ registered shim in registration order:
       "fire_count": 12,
       "last_fired_at": "2026-10-20T14:03:11+00:00",
       "by_model": {"claude-haiku-4-5-20251001": 12},
-      "retirable": false
+      "retirable": false,
+      "first_seen_at": "2026-09-01T09:00:00+00:00"
     }
   ]
 }
@@ -90,12 +91,15 @@ registered shim in registration order:
 
 The report merges the server process's counters with the JSONL firing log, so
 a shim that only fires inside the runner on the same machine is still counted.
-`retirable` is `true` when the shim never fired or its `last_fired_at` is older
-than `idle_days`. Firings logged for a shim that is no longer registered are
+`retirable` is `true` once the deployment has observed the shim for at least
+`idle_days` and it has not fired in that window. Observation starts at
+`first_seen_at`, recorded the first time the report sees the shim registered
+(`<data dir>/shims/first_seen.json`), or at an earlier logged firing. A fresh
+install therefore reports nothing as retirable until the window has passed. Firings logged for a shim that is no longer registered are
 ignored: deleting the registration is how a shim leaves the report.
 
-The route is user-gated like `GET /v1/usage` (401 without an identity in
-multi-user mode).
+In multi-user deployments the route is admin-only (401 without an identity,
+403 for non-admins), because firing counts span every workspace on the server.
 
 ## The janitor automation
 

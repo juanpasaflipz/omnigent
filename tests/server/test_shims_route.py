@@ -110,7 +110,9 @@ def test_get_shims_reports_registered_shims_with_firings() -> None:
     assert set(by_name) == {quiet.name, busy.name}
     assert by_name["test.quiet"]["fire_count"] == 0
     assert by_name["test.quiet"]["last_fired_at"] is None
-    assert by_name["test.quiet"]["retirable"] is True
+    # Just registered on this deployment: not retirable until a full window passes.
+    assert by_name["test.quiet"]["retirable"] is False
+    assert by_name["test.quiet"]["first_seen_at"].endswith("+00:00")
     assert by_name["test.busy"] == {
         "name": "test.busy",
         "reason": "Fires a lot.",
@@ -122,6 +124,7 @@ def test_get_shims_reports_registered_shims_with_firings() -> None:
         "last_fired_at": by_name["test.busy"]["last_fired_at"],
         "by_model": {"gpt-4o": 2},
         "retirable": False,
+        "first_seen_at": by_name["test.busy"]["first_seen_at"],
     }
     assert by_name["test.busy"]["last_fired_at"].endswith("+00:00")
 
