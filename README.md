@@ -1,17 +1,26 @@
 <div align="center">
 
-# <img src="https://raw.githubusercontent.com/omnigent-ai/omnigent/main/docs/images/omnigent-logo.svg" alt="" height="38" valign="middle" /> Omnigent
+# WakeVane
 
-### The open-source meta-harness for all your AI agents.
+### Wake agents. Steer outcomes.
 
-Omnigent is an open-source **meta-harness** that gives you a common orchestration layer over Claude Code, Codex, Cursor, OpenCode, Hermes, Pi, and the agents you write yourself: swap or combine harnesses without rewriting, enforce policies and sandboxing, and collaborate in real time from any device — terminal, browser, phone, or the native desktop app.
+WakeVane is an open-source harness for long-running AI agents. Agents wake when
+something happens (an issue opens, CI fails, a deploy finishes) instead of
+polling, every patch over a model gap is tracked until it can be deleted, and
+cost is measured per harness, per model and per solved task. It runs Claude
+Code, Codex, Cursor, OpenCode, Pi and your own agents behind one server, with
+policies, approvals and spend caps, from a browser, terminal or phone.
 
-[![PyPI version](https://img.shields.io/pypi/v/omnigent.svg)](https://pypi.org/project/omnigent/)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/omnigent-ai/omnigent/blob/main/LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/omnigent)
+**WakeVane is a distribution of [Omnigent](https://github.com/omnigent-ai/omnigent)**,
+the Apache-2.0 meta-harness by Databricks. Everything Omnigent does, WakeVane
+does; [`MODIFICATIONS.md`](MODIFICATIONS.md) lists what this distribution adds
+and changes. The `omnigent` command, Python package and `OMNIGENT_*` settings
+keep their upstream names so the two stay easy to merge.
+
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 ![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)
 
-[omnigent.ai](https://omnigent.ai) · **[⬇️ Download the macOS desktop app](https://omnigent.ai/quickstart/install#install-the-desktop-app)**
+[wakevane.com](https://wakevane.com) · [Deploy on Railway](deploy/railway/README.md) · [What's different](MODIFICATIONS.md)
 
 </div>
 
@@ -60,7 +69,7 @@ Omnigent lets you:
 
 ---
 
-## The flywheel primitives (this fork)
+## What WakeVane adds
 
 This fork adds three primitives motivated by the observation that a harness no
 longer adds coding intelligence, so it has to earn its keep elsewhere: waking
@@ -86,10 +95,10 @@ is in [`designs/HARNESS_FLYWHEEL.md`](designs/HARNESS_FLYWHEEL.md).
   watcher. No polling anywhere.
 
 
-### Install the flywheel distribution
+### Install WakeVane
 
-This fork tracks upstream Omnigent and adds the primitives below on the `dist`
-branch. Install it the same way as upstream, pointed at the fork:
+WakeVane tracks upstream Omnigent and ships from the `dist` branch. Install it
+the same way as upstream, pointed at this repository:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/juanpasaflipz/omnigent/dist/scripts/install_oss.sh \

@@ -2,10 +2,11 @@ Copyright (2026) Databricks, Inc.
 
 This Software includes software developed at Databricks (https://www.databricks.com/) and its use is subject to the included LICENSE file.
 
-This distribution (https://github.com/juanpasaflipz/omnigent) adds the flywheel
-primitives described in designs/HARNESS_FLYWHEEL.md. Modifications are
-Copyright (2026) the flywheel distribution contributors and are licensed
-under the same Apache License 2.0 as the original work.
+WakeVane (https://github.com/juanpasaflipz/omnigent) is a distribution of
+Omnigent that adds the changes listed in MODIFICATIONS.md. "WakeVane" is the
+name of this distribution, not of the original work. Modifications are
+Copyright (2026) the WakeVane contributors and are licensed under the same
+Apache License 2.0 as the original work.
 
 ________________
 

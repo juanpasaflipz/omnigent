@@ -1,6 +1,6 @@
-# The harness that deletes itself
+# WakeVane: the harness that deletes itself
 
-*Launch notes for the flywheel distribution of Omnigent.*
+*Wake agents. Steer outcomes. Launch notes for WakeVane, a distribution of Omnigent.*
 
 At AI Engineer 2026, Jediah Katz, who spent years on Cursor's agent harness
 before moving to SpaceXAI, asked whether the agent harness is dead. His answer

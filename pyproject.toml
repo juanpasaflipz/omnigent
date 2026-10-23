@@ -415,6 +415,8 @@ dev = [
 # `omni` ship, internal and OSS alike.)
 omnigent = "omnigent.cli:main"
 omni = "omnigent.cli:main"
+# WakeVane distribution command; same entry point as `omnigent`.
+wakevane = "omnigent.cli:main"
 
 [tool.uv]
 # Keep plain `uv sync` aligned with the published base package. Repository

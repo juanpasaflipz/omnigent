@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stand up the flywheel distribution on Railway with one command.
+# Stand up WakeVane on Railway with one command.
 #
 # Creates a project with a Postgres database and an `omnigent` service built
 # from this repository's `dist` branch (railway.toml builds the source
@@ -16,7 +16,7 @@
 # Environment overrides: OMNIGENT_REPO (owner/name), OMNIGENT_BRANCH.
 set -euo pipefail
 
-project_name="${1:-omnigent-flywheel}"
+project_name="${1:-wakevane}"
 repo="${OMNIGENT_REPO:-juanpasaflipz/omnigent}"
 branch="${OMNIGENT_BRANCH:-dist}"
 service="omnigent"
