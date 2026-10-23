@@ -465,6 +465,17 @@ class OmnigentClient:
         self._logger.info("Created Omnigent session session_id=%s", session_id)
         return session_id
 
+    async def publish_event(self, kind: str, fields: dict[str, Any]) -> None:
+        """Publish a generic event to the server's event bus.
+
+        Posts to ``POST /v1/events/webhook`` (bearer-authenticated as this
+        client's user), which matches it against active subscriptions.
+        """
+        response = await self._request(
+            "POST", "/v1/events/webhook", json={"kind": kind, "fields": fields}
+        )
+        await _raise_for_status(response)
+
     async def delete_session(self, session_id: str) -> None:
         """Delete a session, e.g. one stranded by a failed runner launch.
 

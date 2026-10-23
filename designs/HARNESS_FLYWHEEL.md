@@ -86,6 +86,31 @@ queues like any other user input.
 `server/scheduled/fire.py` later), Slack-native subscriptions (the Slack daemon
 should forward to `/v1/events/webhook`), event replay, multi-replica leasing.
 
+**Delivered in v2.**
+
+- *Launch a new session from an event — done.* A subscription targets either a
+  `conversation_id` (v1 wake) or an `agent_id` + `prompt_template` with the
+  scheduled-task launch fields (`execution_target`, `host_id`, `workspace`,
+  `max_cost_usd`, `model_override`); a check constraint keeps exactly one
+  target. A match is handed to `fire.launch_session` with a `LaunchRequest`,
+  the entry point the scheduled-task fire path now exposes, so target
+  resolution, session creation, the owner grant, the cost cap and the launch
+  are shared with automations rather than duplicated. Launched sessions are
+  labelled with the subscription and event. An agent-created launch
+  subscription parks on the same approval gate as
+  `sys_scheduled_task_create`.
+- *Slack forwards to the bus — done.* With `OMNIGENT_SLACK_FORWARD_EVENTS=true`
+  the Slack bot posts channel messages and thread replies to
+  `/v1/events/webhook` as `slack.message`, using the poster's delegated token.
+  There is still no `slack` source on the server; Slack rides the generic
+  webhook.
+- *GitHub App webhook — documented.* `docs/GITHUB_APP_SETUP.md` covers pointing
+  the App's webhook at `/v1/events/github` so one App covers every installed
+  repository.
+
+Still open: event replay, multi-replica leasing, run history for launch
+subscriptions (failures are only logged), and editing launch fields in place.
+
 ## 3. Primitive 2: the shim registry
 
 **Problem.** Every harness carries deterministic patches over model gaps: a

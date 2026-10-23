@@ -1683,7 +1683,15 @@ class SqlSubscription(OmnigentBase):
     :param user_id: Owner the wake notice is delivered as, e.g.
         ``"alice@example.com"``. ``None`` in single-user / OSS mode.
     :param conversation_id: Session the wake notice is posted into (relates to
-        ``conversations.id``; no DB foreign key, schema Rule R032).
+        ``conversations.id``; no DB foreign key, schema Rule R032). ``None``
+        for a launch subscription.
+    :param agent_id: Agent a launch subscription starts a fresh session with;
+        ``None`` for a wake subscription. Exactly one of the two is set.
+    :param prompt_template: First user message of a launched session, rendered
+        with the event's fields.
+    :param execution_target: Launch target (``connected_host`` /
+        ``managed_sandbox``), plus ``host_id``, ``workspace``, ``max_cost_usd``,
+        ``model_override`` and ``account_generation`` mirroring scheduled tasks.
     :param source: Event source, e.g. ``"github"`` / ``"webhook"``.
     :param kind: Normalized event kind, e.g. ``"check_run.completed"``.
     :param match: Field filter as a JSON object; the store converts to/from a
@@ -1711,8 +1719,23 @@ class SqlSubscription(OmnigentBase):
     id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
     # String(128) to match every other user-identity column in this schema.
     user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    # Relates to conversations.id. No DB foreign key (Rule R032).
-    conversation_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    # Relates to conversations.id. No DB foreign key (Rule R032). NULL for a
+    # launch subscription (``agent_id`` set instead).
+    conversation_id: Mapped[str | None] = mapped_column(Uuid16, nullable=True)
+    # Launch target (v2): relates to agents.id, no DB FK (Rule R032). Exactly
+    # one of conversation_id / agent_id is set (ck_subscriptions_one_target).
+    agent_id: Mapped[str | None] = mapped_column(Uuid16, nullable=True)
+    # Launch-only: first user message template, rendered per event.
+    prompt_template: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Launch-only, mirroring scheduled_tasks: "connected_host" /
+    # "managed_sandbox" (NULL on wake rows), pinned host/workspace, cost cap,
+    # model override and the owner registration captured at create.
+    execution_target: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    host_id: Mapped[str | None] = mapped_column(Uuid16, nullable=True)
+    workspace: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    max_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    model_override: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    account_generation: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     kind: Mapped[str] = mapped_column(String(128), nullable=False)
     # JSON object text; never SQL-queried (matching happens in the bus).
@@ -1726,6 +1749,14 @@ class SqlSubscription(OmnigentBase):
 
     __table_args__ = (
         CheckConstraint("state IN ('active', 'paused', 'deleted')", name="ck_subscriptions_state"),
+        CheckConstraint(
+            "(conversation_id IS NULL) <> (agent_id IS NULL)", name="ck_subscriptions_one_target"
+        ),
+        CheckConstraint(
+            "execution_target IS NULL OR "
+            "execution_target IN ('connected_host', 'managed_sandbox')",
+            name="ck_subscriptions_execution_target",
+        ),
         # The bus's hot path: every published event loads active rows for its
         # (source, kind) across all workspaces.
         Index("ix_subscriptions_active_lookup", "state", "source", "kind"),

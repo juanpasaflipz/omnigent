@@ -30,7 +30,7 @@ from omnigent.entities import Policy as StoredPolicy
 from omnigent.errors import ErrorCode, OmnigentError, restart_on_stale_cursor
 from omnigent.llms.context_window import fetch_model_pricing_with_provider
 from omnigent.policies.base import Policy
-from omnigent.policies.builtins.safety import SCHEDULED_TASK_APPROVAL_TOOLS
+from omnigent.policies.builtins.safety import UNATTENDED_WORK_APPROVAL_TOOLS
 from omnigent.policies.function import resolve_function_policy
 from omnigent.policies.schema import (
     SESSION_COST_ASK_APPROVED_STATE_KEY,
@@ -84,9 +84,10 @@ _ASK_ON_ADD_POLICY_SPEC = FunctionPolicySpec(
     ),
 )
 
-# Same posture for the scheduled-task tools in SCHEDULED_TASK_APPROVAL_TOOLS:
-# an agent cannot create or update unattended work without user approval.
-# Listing and deleting tasks stay ungated.
+# Same posture for the tools in UNATTENDED_WORK_APPROVAL_TOOLS: an agent
+# cannot create or update scheduled tasks, or create a launch subscription
+# (``sys_subscribe`` with ``agent_id``), without user approval. Listing and
+# deleting tasks, and subscribing the caller's own session, stay ungated.
 _ASK_ON_SCHEDULED_TASK_CHANGE_SPEC = FunctionPolicySpec(
     name="__ask_on_scheduled_task_change",
     on=None,
@@ -438,9 +439,9 @@ def any_policies_apply(
     """
     # The engine unconditionally injects _REQUIRED_APPROVAL_SPECS, so their
     # TOOL_CALL events must always reach it: never fast-path sys_add_policy
-    # or the scheduled-task mutation tools.
+    # or the unattended-work tools (scheduled-task mutations, sys_subscribe).
     if phase == Phase.TOOL_CALL and (
-        tool_name == "sys_add_policy" or tool_name in SCHEDULED_TASK_APPROVAL_TOOLS
+        tool_name == "sys_add_policy" or tool_name in UNATTENDED_WORK_APPROVAL_TOOLS
     ):
         return True
     if spec.guardrails and spec.guardrails.policies:

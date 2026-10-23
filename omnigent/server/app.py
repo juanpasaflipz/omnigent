@@ -1820,6 +1820,9 @@ def create_app(
                 app_state=app_inst.state,
             )
             on_fire = build_on_fire(fire_deps)
+            # Launch subscriptions (event bus) start sessions through the same
+            # fire machinery; the bus's launcher reads these at call time.
+            app_inst.state.scheduled_fire_deps = fire_deps
             # The manual "run now" trigger reuses the same fire path (dispatch /
             # preflight / in-flight guard) as the scheduler; it only differs in
             # allowing a paused task to fire. Exposed on app.state for the
@@ -3585,10 +3588,17 @@ def create_app(
             subscription_store = SqlAlchemySubscriptionStore(scheduled_task_store.storage_location)
         if subscription_store is not None:
             from omnigent.server.events import EventBus
-            from omnigent.server.events.delivery import build_wake_delivery
+            from omnigent.server.events.delivery import (
+                build_session_launcher,
+                build_wake_delivery,
+            )
             from omnigent.server.routes.events import create_events_router
 
-            event_bus = EventBus(subscription_store, build_wake_delivery(app))
+            event_bus = EventBus(
+                subscription_store,
+                build_wake_delivery(app),
+                launch=build_session_launcher(app),
+            )
             app.state.event_bus = event_bus
             app.state.subscription_store = subscription_store
             app.include_router(
@@ -3602,6 +3612,9 @@ def create_app(
                     conversation_store=conversation_store,
                     permission_store=permission_store,
                     auth_provider=auth_provider,
+                    agent_store=agent_store,
+                    agent_cache=agent_cache,
+                    artifact_store=artifact_store,
                 ),
                 prefix="/v1",
                 tags=["subscriptions"],

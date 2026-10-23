@@ -95,6 +95,36 @@ async def test_subscribe_posts_payload_with_runner_supplied_conversation() -> No
 
 
 @pytest.mark.asyncio
+async def test_subscribe_with_agent_id_targets_the_agent_not_the_session() -> None:
+    """A launch subscription forwards its launch fields and no conversation_id."""
+    client = _RecordingClient(_Resp(body={"id": _SUBSCRIPTION_ID, "state": "active"}))
+    await _execute_subscription_tool(
+        "sys_subscribe",
+        json.dumps(
+            {
+                "source": "github",
+                "kind": "issues.opened",
+                "agent_id": "ag_triage",
+                "prompt_template": "Triage {fields_json}",
+                "execution_target": "managed_sandbox",
+                "max_cost_usd": 2.0,
+            }
+        ),
+        server_client=client,
+        conversation_id=_CONVERSATION_ID,
+    )
+    _, _, body = client.calls[0]
+    assert body == {
+        "source": "github",
+        "kind": "issues.opened",
+        "agent_id": "ag_triage",
+        "prompt_template": "Triage {fields_json}",
+        "execution_target": "managed_sandbox",
+        "max_cost_usd": 2.0,
+    }
+
+
+@pytest.mark.asyncio
 async def test_subscribe_without_session_context_errors() -> None:
     client = _RecordingClient()
     out = await _execute_subscription_tool(
@@ -201,7 +231,19 @@ def test_subscribe_schema_requires_source_and_kind_only() -> None:
 
     schema = SysSubscribeTool().get_schema()["function"]["parameters"]
     assert set(schema["required"]) == {"source", "kind"}
-    assert set(schema["properties"]) == {"source", "kind", "match", "note"}
+    assert set(schema["properties"]) == {
+        "source",
+        "kind",
+        "match",
+        "note",
+        "agent_id",
+        "prompt_template",
+        "execution_target",
+        "host_id",
+        "workspace",
+        "max_cost_usd",
+        "model_override",
+    }
     # The runner supplies the session; the model never names one.
     assert "conversation_id" not in schema["properties"]
 

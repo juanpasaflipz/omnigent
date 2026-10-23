@@ -139,6 +139,7 @@ async def run() -> None:
         pool=pool,
         setup=setup,
         server_url=settings.server_url,
+        forward_events=settings.forward_events,
     )
 
     app = AsyncApp(token=settings.slack_bot_token)

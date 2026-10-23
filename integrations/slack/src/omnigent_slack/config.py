@@ -155,6 +155,15 @@ class Settings(BaseSettings):
         validation_alias="OMNIGENT_SLACK_DEFAULT_HOST_TYPE",
     )
 
+    # Opt-in: forward every channel message / thread reply the bot sees (not
+    # its own, not DMs) to the server's ``POST /v1/events/webhook`` as kind
+    # ``slack.message``, so agents can subscribe to Slack activity. Off by
+    # default: it publishes channel text to the server's event bus.
+    forward_events: bool = Field(
+        default=False,
+        validation_alias="OMNIGENT_SLACK_FORWARD_EVENTS",
+    )
+
     # Fernet key (urlsafe-base64, 32 bytes) that encrypts the delegated
     # Omnigent access/refresh tokens at rest in the local SQLite store.
     # Generate with ``python -c "from cryptography.fernet import Fernet;

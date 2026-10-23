@@ -13,6 +13,7 @@ from omnigent_slack.approvals import (
 )
 from omnigent_slack.auth_manager import pack_user_key
 from omnigent_slack.elicitation import ElicitationController, ElicitationTurnState
+from omnigent_slack.forwarding import slack_message_event
 from omnigent_slack.models import SlackTurn, ThreadKey, event_is_dm
 from omnigent_slack.notifications import (
     SlackNotifier,
@@ -201,8 +202,15 @@ class SlackOmnigentService:
         server_url: str,
         bot_user_id: str | None = None,
         elicitations: ElicitationCoordinator | None = None,
+        forward_events: bool = False,
     ) -> None:
         self._store = store
+        # Opt-in (OMNIGENT_SLACK_FORWARD_EVENTS): publish channel messages to the
+        # server's event bus as ``slack.message`` webhook events.
+        self._forward_events = forward_events
+        # In-flight forwards, tracked so shutdown can cancel them. Forwarding runs
+        # beside normal handling and never delays or breaks it.
+        self._forward_tasks: set[asyncio.Task[None]] = set()
         self._pool = pool
         self._setup = setup
         # The one operator-configured Omnigent server. Always the routing
@@ -245,7 +253,7 @@ class SlackOmnigentService:
         return self._elicitations
 
     async def shutdown(self) -> None:
-        tasks = list(self._turn_tasks)
+        tasks = [*self._turn_tasks, *self._forward_tasks]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -330,6 +338,9 @@ class SlackOmnigentService:
         # The event is now claimed and Bolt has auto-acked, so Slack won't
         # redeliver. If handling fails before the turn is underway, release the
         # claim so a redelivery / re-send isn't silently deduped away.
+        if self._forward_events and not event_is_dm(event):
+            self._spawn_forward(body, event)
+
         try:
             if not event_is_dm(event):
                 # In channels Omnigent only joins a thread when @-mentioned (which
@@ -1089,6 +1100,47 @@ class SlackOmnigentService:
     ) -> None:
         """Privately tell a non-owner their click on someone else's card was ignored."""
         await self._elicitation.reject_non_owner_click(client, body, target)
+
+    def _spawn_forward(self, body: dict[str, Any], event: dict[str, Any]) -> None:
+        """Forward a channel message to the event bus in the background."""
+        task = asyncio.create_task(self._forward_message(body, event))
+        self._forward_tasks.add(task)
+        task.add_done_callback(self._forward_tasks.discard)
+
+    async def _forward_message(self, body: dict[str, Any], event: dict[str, Any]) -> None:
+        """Publish one Slack message as a ``slack.message`` webhook event.
+
+        Sent with the posting user's own authenticated client, so on an
+        auth-enabled server only messages from users who signed in to the bot
+        are forwarded. Every failure is logged and swallowed: forwarding must
+        never affect the thread-to-session flow.
+        """
+        payload = slack_message_event(event)
+        user = event.get("user")
+        if payload is None or not isinstance(user, str) or not user:
+            return
+        try:
+            team_id = _team_id(body, event)
+            omnigent = await self._pool.get(self._server_url, pack_user_key(team_id, user))
+            await omnigent.publish_event(payload["kind"], payload["fields"])
+        except AuthRequiredError:
+            self._logger.info(
+                "Not forwarding Slack message channel=%s ts=%s: user %s has not signed in",
+                event.get("channel"),
+                event.get("ts"),
+                user,
+            )
+        except Exception:
+            self._logger.warning(
+                "Failed to forward Slack message channel=%s ts=%s to the event bus",
+                event.get("channel"),
+                event.get("ts"),
+                exc_info=True,
+            )
+        else:
+            self._logger.debug(
+                "Forwarded Slack message channel=%s ts=%s", event.get("channel"), event.get("ts")
+            )
 
     async def _accept_event(
         self,

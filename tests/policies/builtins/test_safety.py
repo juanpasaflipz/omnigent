@@ -870,3 +870,80 @@ def test_block_skills_alias_matching_does_not_over_block() -> None:
     assert policy(tc("load_skill", {"name": "deployer"}))["result"] == "ALLOW"
     assert policy(tc("load_skill", {"name": "myplugin:other"}))["result"] == "ALLOW"
     assert policy(tc("load_skill", {"name": "otherplugin:deploy"}))["result"] == "ALLOW"
+
+
+# ── ask_on_scheduled_task_change: launch subscriptions ─────────
+
+
+def test_sys_subscribe_with_agent_id_asks_like_a_scheduled_task() -> None:
+    """A launch subscription creates unattended work, so it parks on approval."""
+    from omnigent.policies.builtins.safety import ask_on_scheduled_task_change
+
+    template = "Triage this issue: {fields_json} " * 50
+    result = ask_on_scheduled_task_change(
+        {
+            "type": "tool_call",
+            "target": "sys_subscribe",
+            "data": {
+                "name": "sys_subscribe",
+                "arguments": {
+                    "source": "github",
+                    "kind": "issues.opened",
+                    "match": {"repo": "acme/api"},
+                    "agent_id": "ag_triage",
+                    "prompt_template": template,
+                    "execution_target": "managed_sandbox",
+                    "max_cost_usd": 1.5,
+                },
+            },
+        }
+    )
+    reason = result["reason"]
+    assert result["result"] == "ASK"
+    assert "launches a new session" in reason
+    for setting in (
+        "kind=issues.opened",
+        "agent_id=ag_triage",
+        "execution_target=managed_sandbox",
+        "max_cost_usd=1.5",
+        f"prompt_template={len(template)} chars",
+    ):
+        assert setting in reason, reason
+    assert "Triage this issue" not in reason
+
+
+def test_sys_subscribe_for_own_session_stays_ungated() -> None:
+    """Waking the caller's own session schedules no new work and is allowed."""
+    from omnigent.policies.builtins.safety import ask_on_scheduled_task_change
+
+    result = ask_on_scheduled_task_change(
+        {
+            "type": "tool_call",
+            "target": "sys_subscribe",
+            "data": {
+                "name": "sys_subscribe",
+                "arguments": {"source": "github", "kind": "check_run.completed"},
+            },
+        }
+    )
+    assert result["result"] == "ALLOW"
+
+
+def test_sys_subscribe_with_unreadable_arguments_fails_closed() -> None:
+    """Arguments the policy cannot inspect might hide an agent_id, so it asks."""
+    from omnigent.policies.builtins.safety import ask_on_scheduled_task_change
+
+    result = ask_on_scheduled_task_change(
+        {"type": "tool_call", "target": "sys_subscribe", "data": {"name": "sys_subscribe"}}
+    )
+    assert result["result"] == "ASK"
+
+
+def test_sys_subscribe_is_never_fast_pathed_past_the_engine() -> None:
+    """The builder must build the engine for sys_subscribe so the gate runs."""
+    from omnigent.policies.builtins.safety import UNATTENDED_WORK_APPROVAL_TOOLS
+
+    assert "sys_subscribe" in UNATTENDED_WORK_APPROVAL_TOOLS
+    assert {"sys_scheduled_task_create", "sys_scheduled_task_update"} <= (
+        UNATTENDED_WORK_APPROVAL_TOOLS
+    )

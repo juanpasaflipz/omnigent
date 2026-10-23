@@ -34,6 +34,7 @@ is the Python analogue).
 | `service.py` | `SlackOmnigentService` — event acceptance, turn routing, turn lifecycle. Delegates streaming to `streaming.py`, elicitation to `elicitation.py`, messages to `notifications.py`. |
 | `setup.py` / `oauth.py` / `auth_manager.py` / `tokens.py` | Per-user setup modal, device/OIDC login flows, token storage (encrypted at rest). |
 | `store.py` | SQLite: thread→session mapping and per-user config. |
+| `forwarding.py` | Opt-in event forwarding: builds the `slack.message` body for `POST /v1/events/webhook`. Pure; the service sends it. |
 | `app.py` | slack_bolt wiring: event handlers + the Block Kit action handlers. |
 
 ## The turn: streaming lifecycle
@@ -268,6 +269,25 @@ unsupported. Tokens are encrypted at rest when
 path refreshes a delegated token once mid-request. See `README.md#authentication`
 for the operator/user view and `designs/DEVICE_AUTH.md` in the main repo for the
 threat model.
+
+## Event forwarding (opt-in)
+
+With `OMNIGENT_SLACK_FORWARD_EVENTS=true`, `SlackOmnigentService.handle_message`
+publishes each accepted (deduplicated, non-bot) channel message as a
+`slack.message` webhook event before its normal routing. The bot does not own
+any subscription routing: the server's event bus matches the event against
+agents' subscriptions, which keeps Slack-driven wakes on the same path as
+GitHub and other webhooks. Two choices are deliberate:
+
+- **Background, best-effort.** The forward runs as a tracked task (cancelled
+  on shutdown) and swallows every failure after logging it, so a slow or
+  failing server never delays or breaks the thread-to-session flow.
+- **Poster's identity.** It uses the pooled client of the message's author,
+  so the event is published under that user's own bearer token. Unenrolled
+  authors on an auth-enabled server are skipped (logged at INFO), never
+  prompted to sign in — forwarding is invisible to channel members.
+
+DMs are never forwarded: they are private to the user and the bot.
 
 ## Testing notes
 

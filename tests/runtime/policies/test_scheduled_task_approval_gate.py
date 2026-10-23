@@ -48,8 +48,23 @@ def _no_guardrails_spec(
             {"scheduled_task_id": _TASK_ID, "state": "paused"},
             PolicyAction.ASK,
         ),
+        (
+            "sys_subscribe",
+            {
+                "source": "github",
+                "kind": "issues.opened",
+                "agent_id": "ag_1",
+                "prompt_template": "Triage {fields_json}",
+            },
+            PolicyAction.ASK,
+        ),
+        (
+            "sys_subscribe",
+            {"source": "github", "kind": "check_run.completed"},
+            PolicyAction.ALLOW,
+        ),
     ],
-    ids=["add_policy_control", "create", "update"],
+    ids=["add_policy_control", "create", "update", "launch_subscribe", "wake_subscribe"],
 )
 async def test_scheduled_task_mutation_asks_without_guardrails(
     tmp_path: Path,
@@ -76,7 +91,7 @@ async def test_scheduled_task_mutation_asks_without_guardrails(
 
 @pytest.mark.parametrize(
     "tool_name",
-    ["sys_add_policy", "sys_scheduled_task_create", "sys_scheduled_task_update"],
+    ["sys_add_policy", "sys_scheduled_task_create", "sys_scheduled_task_update", "sys_subscribe"],
 )
 def test_no_policy_fast_path_keeps_mutation_gates(
     tmp_path: Path,

@@ -44,6 +44,33 @@ omnigent run examples/factory
 The foreman subscribes and ends its turn. From then on it only speaks when
 something happens.
 
+### Without a running foreman
+
+A launch subscription names an agent and a prompt template instead of a
+session; every matching event starts a fresh session for you on the server
+(see [`docs/SUBSCRIPTIONS.md`](../../docs/SUBSCRIPTIONS.md#launch-subscriptions)).
+Find the triager's agent id with `GET /v1/agents`, then:
+
+```bash
+curl -X POST https://<your-server>/v1/subscriptions \
+  -H "authorization: Bearer $OMNIGENT_TOKEN" -H "content-type: application/json" \
+  -d '{
+        "agent_id": "<triager agent id>",
+        "source": "github",
+        "kind": "issues.opened",
+        "match": {"repo": "acme/api"},
+        "note": "triage",
+        "prompt_template": "A new issue was opened in {fields_json}. Reproduce it, label it, and comment with what you found.",
+        "execution_target": "managed_sandbox",
+        "max_cost_usd": 1
+      }'
+```
+
+Each new issue in `acme/api` now opens a session titled `issues.opened: triage`,
+labelled with the subscription id, with no human action. If the foreman creates
+this subscription itself (`sys_subscribe` with `agent_id`), the call waits for
+your approval first, like creating an automation.
+
 ## What each piece demonstrates
 
 | Piece | Flywheel idea |
@@ -57,9 +84,11 @@ something happens.
 
 ## Limits of this example
 
-- Subscriptions v1 wake an existing session. The foreman must already be
-  running to receive the first event. Launching a fresh session from an event
-  is the next phase (see the fork plan).
+- The foreman's own `sys_subscribe` calls wake the foreman's session, so the
+  foreman must be running to receive them. With launch subscriptions (v2) you
+  do not need it running for intake: register a subscription that starts a
+  triage session per new issue, and nothing has to be up when the issue
+  arrives. See "Without a running foreman" below.
 - `check_run.completed` fires for every check on every PR in the repo. The
   foreman is told to ignore PRs it did not open; a `match` on `pull_request`
   number per fixer PR would be tighter and is a good first contribution.
