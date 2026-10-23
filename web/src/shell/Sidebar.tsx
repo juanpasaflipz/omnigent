@@ -32,6 +32,7 @@ import {
 import { createPortal } from "react-dom";
 import {
   ArchiveIcon,
+  BellRingIcon,
   ArrowUpDownIcon,
   ArchiveRestoreIcon,
   CheckIcon as CheckMarkIcon,
@@ -499,6 +500,7 @@ function useActiveNavItem(): {
   isTasksPage: boolean;
   isUsagePage: boolean;
   isShimsPage: boolean;
+  isSubscriptionsPage: boolean;
   activeExtensionPageId: string | null;
   newSessionProjectName: string | null;
 } {
@@ -518,6 +520,7 @@ function useActiveNavItem(): {
   const isTasksPage = !isExtensionRoute && leaf === "tasks";
   const isUsagePage = !isExtensionRoute && leaf === "usage";
   const isShimsPage = !isExtensionRoute && leaf === "shims";
+  const isSubscriptionsPage = !isExtensionRoute && leaf === "subscriptions";
   const activeExtensionPageId =
     resolveExtensionPageFromPath(extensions, location.pathname)?.page.id ?? null;
   const isNewSessionRoute =
@@ -528,6 +531,7 @@ function useActiveNavItem(): {
     !isTasksPage &&
     !isUsagePage &&
     !isShimsPage &&
+    !isSubscriptionsPage &&
     !isExtensionRoute;
   const requestedProject = isNewSessionRoute
     ? new URLSearchParams(location.search).get("project")
@@ -544,6 +548,7 @@ function useActiveNavItem(): {
     isTasksPage,
     isUsagePage,
     isShimsPage,
+    isSubscriptionsPage,
     activeExtensionPageId,
     newSessionProjectName,
   };
@@ -695,6 +700,7 @@ function SidebarImpl({
   const usagePageEnabled = isFeatureEnabled(serverInfo, "usage_page");
   const canvasEnabled = isFeatureEnabled(serverInfo, "canvas");
   const shimsPageEnabled = isFeatureEnabled(serverInfo, "shims_page");
+  const subscriptionsPageEnabled = isFeatureEnabled(serverInfo, "subscriptions_page");
   const [searchParams] = useSearchParams();
   const canvasDestination = canvasLocation(searchParams.get(CANVAS_QUERY_PARAM) ?? MAIN_CANVAS_ID);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -824,6 +830,7 @@ function SidebarImpl({
     isTasksPage,
     isUsagePage,
     isShimsPage,
+    isSubscriptionsPage,
     activeExtensionPageId,
     newSessionProjectName,
   } = useActiveNavItem();
@@ -1333,6 +1340,17 @@ function SidebarImpl({
                   onClick={onNavClick}
                   componentId="sidebar.shims"
                   testId="shims-nav"
+                />
+              )}
+              {subscriptionsPageEnabled && (
+                <PrimaryNavLink
+                  to="/subscriptions"
+                  label="Subscriptions"
+                  icon={BellRingIcon}
+                  active={isSubscriptionsPage}
+                  onClick={onNavClick}
+                  componentId="sidebar.subscriptions"
+                  testId="subscriptions-nav"
                 />
               )}
             </div>

@@ -6,7 +6,7 @@ The flow is: an agent (or a client) creates a subscription naming a `source`, an
 
 A subscription can instead name an **agent** and a prompt template. Then every matching event **launches a fresh session** for the subscription's owner, the same way an automation fires, so nothing has to be running when the event arrives. See [Launch subscriptions](#launch-subscriptions).
 
-Everything described here is behind the `subscriptions` release feature flag and ships off by default.
+Everything described here is behind the `subscriptions` release feature flag, which is on by default in the flywheel distribution and off upstream. Most of it can be driven [from the web UI](#from-the-web-ui) without touching the API.
 
 ## Enabling the flag
 
@@ -18,7 +18,7 @@ While it is on, the server:
 - mounts the `/v1/subscriptions` CRUD routes,
 - builds an in-process event bus backed by a `subscriptions` table on the same database as automations.
 
-The flag is server-only: it does not appear under `features` in `GET /v1/info`, and nothing changes in the web UI. See `designs/FEATURE_FLAGS.md` for the inventory and review release.
+The flag is server-only: it does not appear under `features` in `GET /v1/info`. The web page is behind its own frontend flag, `subscriptions_page` (see [From the web UI](#from-the-web-ui)). See `designs/FEATURE_FLAGS.md` for the inventory and review release.
 
 Separately, an agent only gets the `sys_subscribe` tools when its spec opts in with a top-level `subscriptions: true`, the same way `timers: true` gates the timer tools. Both switches must be on for an agent to subscribe itself.
 
@@ -46,6 +46,60 @@ Each delivery is normalized into a `kind` and a flat `fields` dict:
 | `push` | `push` |
 
 `fields` carries whichever of these the payload has: `repo` (`owner/name`), `action`, `conclusion`, `status`, `name` (the check's name), `pull_request` (number; the first when a check lists several), `issue` (number), `sender` (login), `ref`, and `url` (the subject's `html_url`). Nothing else from the payload is kept, so a filter can only name these keys.
+
+## From the web UI
+
+The **Subscriptions** page (`/subscriptions`, sidebar entry **Subscriptions**) is behind the frontend flag `subscriptions_page`, on by default in the flywheel distribution (`OMNIGENT_FEATURES=-subscriptions_page` hides it; the APIs below stay available). It lists your subscriptions with their event, filter, target (a link to the woken session, or the agent a launch starts), note, state, fire count and last firing, and lets you pause, resume or delete each one.
+
+**Before you start** (once per server, by the operator):
+
+- Set `OMNIGENT_GITHUB_WEBHOOK_SECRET` on the server.
+- Make sure the server has a public URL. It is taken from `OMNIGENT_ACCOUNTS_BASE_URL`, then `OMNIGENT_DOMAIN`, then the platform's domain (`RAILWAY_PUBLIC_DOMAIN`, `RENDER_EXTERNAL_URL`, `FLY_APP_NAME`, `SPACE_HOST`), then the address the browser used. A server only reachable on `localhost` or a private IP cannot receive GitHub deliveries, and the page says so.
+- Configure the GitHub App ([GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md)) and give it the Repository permission **Webhooks: Read and write**, so it can register webhooks for users. Existing installations must accept the new permission.
+
+Each user then connects their own GitHub account once: **Settings → Sandbox Integrations → Connect GitHub**. The page links there when you have not.
+
+### Connect a repository
+
+**Connect a repository** opens a dialog:
+
+1. Pick a repository (the list comes from your GitHub connection).
+2. Choose what happens: **Start an agent** (pick an agent, edit the prompt template, optionally set a cost cap per session) creates [launch subscriptions](#launch-subscriptions); **Wake a session** (pick one of your sessions) creates wake subscriptions. The prompt template supports `{source}`, `{kind}`, `{subscription_id}`, `{note}` and `{fields_json}`.
+3. Tick the events:
+
+   | Checkbox | `kind` | Extra filter |
+   | --- | --- | --- |
+   | New issues | `issues.opened` | |
+   | Failed checks | `check_run.completed` | `conclusion: failure` |
+   | New PR | `pull_request.opened` | |
+   | Comments | `issue_comment.created` | |
+
+On submit the server registers its webhook on the repository with your GitHub token (`POST /v1/subscriptions/github/connect`), then the dialog creates one subscription per ticked event with `match: {"repo": "<owner>/<name>", ...}`. Errors from the server are shown as they are.
+
+`POST /v1/subscriptions/github/connect` takes `{"owner": "acme", "repo": "api"}`. It creates a repository webhook pointing at `<public URL>/v1/events/github` with JSON content, the server's webhook secret, and the events `check_run`, `check_suite`, `issue_comment`, `issues`, `pull_request` and `push`, or reuses the webhook that already points there (adding any missing events). It answers `{"status": "created" | "existing", "hook_id": 123, "events": [...]}`; the secret is never returned. Errors:
+
+| Status | When |
+| --- | --- |
+| `409` | You have not connected GitHub (the message points to Settings), the server has no GitHub App, `OMNIGENT_GITHUB_WEBHOOK_SECRET` is unset, or the server has no public URL. |
+| `403` (`upstream_permission_denied`) | GitHub refused to list or create webhooks: the App lacks **Webhooks: Read and write**, is not installed on the repository's owner, or you are not an admin of the repository. |
+| `400` | The owner or repository name is not a valid GitHub name. |
+| `502` | Any other GitHub failure. |
+
+`GET /v1/subscriptions/github/status?owner=acme&repo=api` reports `{"repo", "connected", "hook_exists", "hook_id", "events"}` (`connected: false` when you have not linked GitHub).
+
+A repository webhook and the [App-level webhook](GITHUB_APP_SETUP.md#webhook-for-subscriptions) both deliver the same events; use one of them per repository.
+
+### Start a software factory
+
+The **Start a software factory** card at the top of the page sets up the [`examples/factory`](../examples/factory/README.md) foreman for one repository in one click. Pick the repository, a budget (default 25 USD) and whether to **Ask me before merging** (on by default), then **Start factory**. `POST /v1/templates/factory` with `{"owner", "repo", "daily_budget_usd", "ask_before_merge"}`:
+
+1. connects the repository's webhook exactly as above (so the same errors apply, and nothing is created when one occurs),
+2. installs the factory bundle as your own agent, named `factory-<owner>-<repo>`, with `daily_budget_usd` as the `max_cost_usd` of its `cost_budget` policy (it asks you to continue at 40% of it) and `ask_before_merge` as `gate_pushes` on its `blast_radius` policy,
+3. creates two launch subscriptions for that agent: `issues.opened` with `match: {"repo": "<owner>/<name>"}` (the prompt asks the foreman to triage the issue in `{fields_json}`) and `check_run.completed` with `match: {"repo": "<owner>/<name>", "conclusion": "failure"}`. They run in a managed sandbox when the server can provision one, otherwise on your most recently active connected host.
+
+The response carries `agent_id`, `agent_name`, `subscription_ids`, the `subscriptions` (each with `created: true | false`) and the `hook` status. Calling it again for the same repository returns the same agent and subscriptions instead of duplicating them; a changed budget or merge setting updates the agent in place, and a subscription you deleted is created again. Open an issue in the repository and a foreman session starts and dispatches the triager.
+
+The budget is a per-session cap on the foreman: each launched session (and the workers it dispatches) stops at that amount; it is not pooled across a calendar day.
 
 ## The generic webhook
 

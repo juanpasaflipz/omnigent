@@ -56,6 +56,10 @@ _GITHUB_ACTIONED_EVENTS: dict[str, frozenset[str]] = {
     "issue_comment": frozenset({"created"}),
 }
 _GITHUB_ACTIONLESS_EVENTS = frozenset({"push"})
+# Every GitHub event name the ingest normalizes: what a webhook should deliver.
+GITHUB_INGESTED_EVENTS: tuple[str, ...] = tuple(
+    sorted({*_GITHUB_ACTIONED_EVENTS, *_GITHUB_ACTIONLESS_EVENTS})
+)
 
 _KIND_PATTERN = re.compile(r"^[a-z_]+(\.[a-z_]+)?$")
 _MAX_WEBHOOK_FIELDS = 64

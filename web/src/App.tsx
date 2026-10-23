@@ -67,6 +67,10 @@ const ShimsPage = withPageView(
   "shims",
   lazy(() => import("@/pages/ShimsPage").then((m) => ({ default: m.ShimsPage }))),
 );
+const SubscriptionsPage = withPageView(
+  "subscriptions",
+  lazy(() => import("@/pages/SubscriptionsPage").then((m) => ({ default: m.SubscriptionsPage }))),
+);
 const SettingsPage = lazy(() =>
   import("@/pages/SettingsPage").then((m) => ({ default: m.SettingsPage })),
 );
@@ -212,6 +216,14 @@ function AppRoutes({ basename }: AppProps) {
             element={
               <FeatureGatedPage feature="shims_page">
                 <ShimsPage />
+              </FeatureGatedPage>
+            }
+          />
+          <Route
+            path={`${prefix}/subscriptions`}
+            element={
+              <FeatureGatedPage feature="subscriptions_page">
+                <SubscriptionsPage />
               </FeatureGatedPage>
             }
           />

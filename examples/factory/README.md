@@ -20,6 +20,18 @@ issue opened ──► foreman wakes ──► triager (low effort, read-only)
                  deploy.finished ──► watcher wakes ──► health checks ──► verdict
 ```
 
+## One click from the web UI
+
+On a server with the flywheel defaults, open **Subscriptions** in the web UI and
+use **Start a software factory**: pick the repository, a budget and whether to
+ask before merging. The server installs this bundle as your own agent
+(`factory-<owner>-<repo>`) with those settings, registers the GitHub webhook on
+the repository for you, and subscribes the foreman to new issues and failed
+checks. Open an issue and a triage session starts. Prerequisites (GitHub
+connected in Settings, the App's **Webhooks: Read and write** permission,
+`OMNIGENT_GITHUB_WEBHOOK_SECRET` and a public server URL) are in
+[`docs/SUBSCRIPTIONS.md`](../../docs/SUBSCRIPTIONS.md#start-a-software-factory).
+
 ## Run it
 
 ```bash

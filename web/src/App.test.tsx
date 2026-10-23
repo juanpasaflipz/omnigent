@@ -20,6 +20,9 @@ vi.mock("@/pages/ChatPage", () => ({ ChatPage: () => <div>chat page</div> }));
 vi.mock("@/pages/NotFoundPage", () => ({ NotFoundPage: () => <div>not found</div> }));
 vi.mock("@/pages/UsagePage", () => ({ UsagePage: () => <div>usage page</div> }));
 vi.mock("@/pages/ShimsPage", () => ({ ShimsPage: () => <div>shims page</div> }));
+vi.mock("@/pages/SubscriptionsPage", () => ({
+  SubscriptionsPage: () => <div>subscriptions page</div>,
+}));
 vi.mock("@/pages/SettingsPage", async () => {
   const { useLocation } = await import("react-router-dom");
   return {
@@ -243,6 +246,20 @@ describe("Shims release feature route", () => {
   it("renders the Shims page at /shims while the feature is on", async () => {
     renderRoute("/shims", { shims_page: true });
     expect(await screen.findByText("shims page")).toBeInTheDocument();
+    expect(screen.queryByText("not found")).toBeNull();
+  });
+});
+
+describe("Subscriptions release feature route", () => {
+  it("renders not found at /subscriptions while the feature is off", async () => {
+    renderRoute("/subscriptions");
+    expect(await screen.findByText("not found")).toBeInTheDocument();
+    expect(screen.queryByText("subscriptions page")).toBeNull();
+  });
+
+  it("renders the Subscriptions page at /subscriptions while the feature is on", async () => {
+    renderRoute("/subscriptions", { subscriptions_page: true });
+    expect(await screen.findByText("subscriptions page")).toBeInTheDocument();
     expect(screen.queryByText("not found")).toBeNull();
   });
 });
