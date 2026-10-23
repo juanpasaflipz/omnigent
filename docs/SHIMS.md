@@ -107,10 +107,11 @@ The **Shims** page (`/shims`, sidebar entry "Shims") renders this report as a
 table: name, owner, fire count, last fired (relative), review-by version and a
 **Retirable** badge. Expanding a row shows the reason, the model gap, the
 version it was added in and the per-model firing counts. The 7 / 30 / 90 day
-buttons set `idle_days`. The page is behind the `shims_page` release flag:
+buttons set `idle_days`. The page is behind the `shims_page` release flag,
+which is on by default in the flywheel distribution. Hide it with:
 
 ```sh
-OMNIGENT_FEATURES=shims_page omnigent server
+OMNIGENT_FEATURES=-shims_page omnigent server
 ```
 
 Reload the web app after changing the flag; `GET /v1/shims` itself is not gated.

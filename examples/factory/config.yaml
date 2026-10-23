@@ -8,7 +8,7 @@
 # agents are the building block, events are the clock.
 #
 # Usage:
-#   OMNIGENT_FEATURES=subscriptions omnigent server      # subscriptions on
+#   omnigent server              # subscriptions are on by default here
 #   omnigent run examples/factory
 #   > "Watch acme/api. Subscribe to new issues and failed check runs on open PRs."
 #

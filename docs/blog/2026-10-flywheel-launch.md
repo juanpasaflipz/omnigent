@@ -73,7 +73,7 @@ polls.
 
 ```bash
 uv tool install --python 3.12 "git+https://github.com/juanpasaflipz/omnigent.git@dist"
-OMNIGENT_FEATURES=subscriptions,usage_page,shims_page omnigent server
+omnigent server
 omnigent run examples/factory
 ```
 

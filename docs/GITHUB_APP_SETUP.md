@@ -216,9 +216,9 @@ session, when a GitHub event arrives: an issue opened, CI going red on a pull
 request, a push. The App can deliver those events for every repository it is
 installed on, so you do not have to add a webhook to each repository by hand.
 
-1. **Turn on subscriptions on the server.** Start it with
-   `OMNIGENT_FEATURES=subscriptions` (the ingest route only mounts behind that
-   flag) and pick a webhook secret, e.g. `openssl rand -hex 32`. Set it on the
+1. **Make sure subscriptions are on.** The ingest route only mounts behind the
+   `subscriptions` flag, which is on by default in the flywheel distribution
+   (upstream needs `OMNIGENT_FEATURES=subscriptions`). Pick a webhook secret, e.g. `openssl rand -hex 32`. Set it on the
    server as `OMNIGENT_GITHUB_WEBHOOK_SECRET`. It is read on every delivery, so
    rotating it needs no restart; while it is unset the endpoint answers `503`
    and accepts nothing.

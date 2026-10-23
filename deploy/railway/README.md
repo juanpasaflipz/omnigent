@@ -1,80 +1,72 @@
 # Omnigent on Railway
 
-Deploy Omnigent to Railway. Railway pulls the pre-built image, runs it next to
-a managed Postgres, and serves it over HTTPS on `*.up.railway.app`.
+Deploy the flywheel distribution to Railway: the server and web UI built from
+this repository, next to a managed Postgres, served over HTTPS on
+`*.up.railway.app`. A hosted server is also what makes subscriptions useful,
+because GitHub and Slack can only deliver events to a public URL.
 
-> **Railway is not yet a true one-click.** Unlike Render's `render.yaml` (fully
-> declarative — Postgres, port, and env all wired automatically), a bare
-> `railway.toml` leaves several things to wire by hand (steps below). A real
-> one-click experience needs a **published Railway template** that pre-wires the
-> Postgres reference, `HOST`, and target port — tracked as a follow-up. Until
-> then, use the manual steps here. (Render is the smoother path today.)
+## One command (Railway CLI)
 
-<!-- TODO(oss-release): publish a Railway template (pre-wiring Postgres + HOST +
-     port) and add the button:
-     [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/<template-id>) -->
+```bash
+railway login
+deploy/railway/deploy.sh my-omnigent
+```
+
+The script creates the project, adds Postgres, adds an `omnigent` service built
+from `juanpasaflipz/omnigent@dist`, wires `DATABASE_URL`, attaches a volume at
+`/data`, generates an admin password and a GitHub webhook secret, and prints a
+public domain. The first build compiles the web UI and the server and takes
+several minutes; follow it with `railway logs --build`. Sign in as `admin` with
+the printed password.
+
+Railway's GitHub app must be allowed to read the repository. If `railway add`
+reports it cannot access the repo, grant access at
+`github.com/settings/installations` and rerun.
 
 ## What gets provisioned
 
-- **omnigent** — web service that pulls `ghcr.io/omnigent-ai/omnigent-server`
-  via `deploy/docker/Dockerfile.prebuilt`, served on `https://<project>.up.railway.app`.
-- **Postgres** — Railway-managed PostgreSQL plugin you add to the project.
-  Adding the plugin does **not** wire its `DATABASE_URL` into the app on its
-  own. You add that reference variable on the omnigent service yourself before
-  the app can boot (see step 2).
+- **omnigent**: a web service built from source by `railway.toml`, which
+  points at `deploy/docker/Dockerfile`. Its `web-builder` stage compiles the
+  web UI and the final `runtime` stage is the server, so no prebuilt image is
+  needed.
+- **Postgres**: a Railway-managed database, referenced from the service as
+  `DATABASE_URL=${{Postgres.DATABASE_URL}}`.
+- **A volume at `/data`** holding artifacts (`ARTIFACT_DIR=/data/artifacts`),
+  admin credentials, and server state (`OMNIGENT_DATA_DIR=/data/omnigent`),
+  which includes the shim registry's firing log and first-seen record. Without
+  it every redeploy forgets which shims have fired.
 
-Artifact storage uses the container's local filesystem by default (ephemeral
-across redeploys). For persistence, add a Railway Volume mounted at
-`/data/artifacts`.
+The flywheel features (`subscriptions`, `usage_page`, `shims_page`) are on by
+default; nothing needs to be set to enable them.
 
-> **Optional: external Neon Postgres.** Instead of the Railway plugin, you can
-> point `DATABASE_URL` at a Neon database ([pg.new](https://pg.new)) — e.g. for
-> Neon's serverless scale-to-zero or branching. Tradeoff: you lose the
-> integrated provisioning (a separate signup + connection string) and add some
-> cross-provider latency, so the Railway plugin stays the simpler default.
+## From the dashboard instead
 
-## Setup (built-in accounts — the default)
+1. **New Project, Deploy from GitHub repo**, pick your fork of this repository
+   and set the branch to `dist`. Add a **Postgres** database to the project.
+2. On the **omnigent** service, open **Variables** and add:
 
-Defaults to the `accounts` auth provider: multi-user, no external IdP. The
-steps below are validated end-to-end:
+   | Variable | Value |
+   | --- | --- |
+   | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
+   | `OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD` | output of `openssl rand -hex 16` |
+   | `OMNIGENT_GITHUB_WEBHOOK_SECRET` | output of `openssl rand -hex 32` |
+   | `OMNIGENT_DATA_DIR` | `/data/omnigent` |
+   | `OMNIGENT_ADMIN_CREDENTIALS_PATH` | `/data/admin-credentials` |
 
-1. **Deploy from the repo** — New Project → Deploy from GitHub repo → this repo.
-   Railway reads `railway.toml` and pulls the image. **Add a Postgres plugin**
-   to the project.
-2. **Add the `DATABASE_URL` reference on the app service** (required before the
-   first successful boot). Adding the Postgres plugin does **not** inject its
-   `DATABASE_URL` into the omnigent service. Open the **omnigent** service →
-   **Variables**, add a variable named `DATABASE_URL`, and set its value to a
-   reference to the Postgres service: `${{Postgres.DATABASE_URL}}`. If your
-   database service is named something other than `Postgres`, match that name
-   (for example `${{my-db.DATABASE_URL}}`). Until this reference is set, the
-   deploy errors with `DATABASE_URL is required` on every boot, so add it, then
-   **redeploy**.
-3. **Create the first admin.** No credentials are auto-generated. The
-   first-boot **Deploy logs** print a "No admin yet" line pointing at your
-   `*.up.railway.app` URL (printed once; idempotent — later boots don't
-   reprint). Open that URL and use the web Create-admin form to pick your own
-   username + password.
-4. Log in with the admin you just created, invite teammates from **Members**.
+3. Add a **Volume** to the service mounted at `/data`.
+4. Under **Settings, Networking**, generate a domain. Sign in as `admin`.
 
-> **`HOST` is handled automatically.** Railway injects `HOST=[::]`, which a
-> socket bind can't use and which Railway's IPv4 edge can't reach; the
-> entrypoint detects Railway and coerces it to `0.0.0.0`, so no manual `HOST`
-> variable is needed. If the generated domain returns "Application failed to
-> respond," Railway's port auto-detect picked the wrong port — open
-> Settings → Networking and set the domain's target port to the `PORT` Railway
-> injected (shown in the boot log as `Uvicorn running on …:<port>`).
+> **Set the admin password before the first boot.** While no account exists,
+> `POST /auth/setup` is unauthenticated, so an instance exposed without
+> `OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD` can be claimed by its first visitor.
 
-> The cookie secret is auto-minted and `OMNIGENT_ACCOUNTS_BASE_URL` is
-> auto-detected from `RAILWAY_PUBLIC_DOMAIN`, so those don't need setting. To
-> pin a known admin password, set `OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD`
-> before first boot.
+> **`HOST` is handled automatically.** Railway injects `HOST=[::]`; the
+> entrypoint detects Railway and binds `0.0.0.0`. If the domain returns
+> "Application failed to respond", set the domain's target port under
+> **Settings, Networking** to the `PORT` shown in the boot log.
 
-> **Security note for public deployments:** `POST /auth/setup` is
-> unauthenticated while no password-bearing account exists, so an instance
-> exposed before you reach the Create-admin form can be claimed by the first
-> visitor. Pre-seed `OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD`, or complete setup
-> promptly after the deploy goes live.
+The cookie secret is auto-minted and `OMNIGENT_ACCOUNTS_BASE_URL` is detected
+from `RAILWAY_PUBLIC_DOMAIN`.
 
 ## Release features
 
@@ -148,11 +140,9 @@ propagates.
 
 ## Upgrading
 
-Railway redeploys automatically when a new image tag is pushed to GHCR
-(if you've configured a webhook) or on demand:
-
-1. In the Railway dashboard, open the **omnigent** service.
-2. Click **Deploy** → **Latest** to pull the newest `:latest` image.
+The service deploys from the `dist` branch, so Railway rebuilds on every push
+to it. To redeploy by hand, open the **omnigent** service and choose
+**Deploy, Redeploy**, or run `railway redeploy --service omnigent`.
 
 ## Cost
 
@@ -162,11 +152,19 @@ $10–15/month total including the Postgres plugin.
 
 ## Publishing the template
 
-One-time setup done by the repo owner after the repository is public:
+A published Railway template turns this into a single "Deploy on Railway"
+button. It is created from a working project:
 
-1. Go to `railway.com/new/template` and click **Create template**.
-2. Point it at `github.com/omnigent-ai/omnigent`.
-3. Select the **Postgres** plugin.
-4. Pre-fill default env vars with descriptions for the optional OIDC fields.
-5. Click **Publish**. Copy the generated deploy URL and update the badge at the
-   top of this file and in `deploy/README.md`.
+1. Deploy once with `deploy.sh` or the dashboard steps above.
+2. Create a draft from the project, either with the dashboard's **Generate
+   Template** action or `railway templates create` while linked to it.
+3. In the draft, replace the two generated secrets with template functions so
+   every deploy gets its own:
+
+   | Variable | Template value |
+   | --- | --- |
+   | `OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD` | `${{secret(32, "abcdef0123456789")}}` |
+   | `OMNIGENT_GITHUB_WEBHOOK_SECRET` | `${{secret(64, "abcdef0123456789")}}` |
+
+4. Publish it and put its `railway.com/new/template/<code>` link in the README
+   badge.

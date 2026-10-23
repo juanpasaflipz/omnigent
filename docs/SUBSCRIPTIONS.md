@@ -10,7 +10,9 @@ Everything described here is behind the `subscriptions` release feature flag and
 
 ## Enabling the flag
 
-Set `OMNIGENT_FEATURES=subscriptions` on the server and restart it. The server then:
+The `subscriptions` flag is on by default in the flywheel distribution; upstream
+Omnigent keeps it opt-in. Disable it with `OMNIGENT_FEATURES=-subscriptions`.
+While it is on, the server:
 
 - mounts `POST /v1/events/github` and `POST /v1/events/webhook` (the ingest surface),
 - mounts the `/v1/subscriptions` CRUD routes,

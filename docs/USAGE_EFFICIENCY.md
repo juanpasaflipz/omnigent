@@ -118,10 +118,11 @@ tokens show `—`. The page's window buttons set `days` (7, 30, 90; "All time"
 asks for the 366-day maximum, and a custom range uses its start date because
 the scorecard always ends today).
 
-The tab rides on the Usage page's release flag, so enable it with:
+The tab rides on the Usage page's `usage_page` release flag, which is on by
+default in the flywheel distribution. Hide it with:
 
 ```sh
-OMNIGENT_FEATURES=usage_page omnigent server
+OMNIGENT_FEATURES=-usage_page omnigent server
 ```
 
 ### How to read it

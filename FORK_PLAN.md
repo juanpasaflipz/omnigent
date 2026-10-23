@@ -158,7 +158,7 @@ uv run --no-sync pytest tests/runtime/test_shims.py tests/server/test_shims_rout
 Then start a server with the flag on and poke the new endpoints:
 
 ```bash
-OMNIGENT_FEATURES=subscriptions uv run --no-sync omnigent server
+uv run --no-sync omnigent server
 curl -s localhost:8000/v1/shims | jq .
 curl -s "localhost:8000/v1/usage/efficiency?days=30" | jq .totals
 curl -s -X POST localhost:8000/v1/events/webhook \

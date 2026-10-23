@@ -14,14 +14,19 @@ from omnigent.server.feature_flags import (
     resolve_feature_flags,
 )
 
+# The flywheel distribution turns its own features on by default.
+_DISTRIBUTION_DEFAULTS = ("shims_page", "subscriptions", "usage_page")
+
 
 @pytest.mark.parametrize("environ", [{}, {FEATURES_ENV_VAR: ""}, {FEATURES_ENV_VAR: " , , "}])
 def test_unset_or_empty_uses_feature_defaults(environ: dict[str, str]) -> None:
     flags = resolve_feature_flags(environ)
 
-    assert flags.enabled_features == frozenset({Feature.CLAUDE_OSC_STATUS})
+    assert flags.enabled_features == frozenset(
+        {Feature.CLAUDE_OSC_STATUS, Feature.SHIMS_PAGE, Feature.SUBSCRIPTIONS, Feature.USAGE_PAGE}
+    )
     assert flags.frontend_dict() == {
-        "usage_page": False,
+        "usage_page": True,
         "harness_install": False,
         "canvas": False,
         "arca_shutdown_warnings": False,
@@ -32,7 +37,7 @@ def test_unset_or_empty_uses_feature_defaults(environ: dict[str, str]) -> None:
         "grid_sessions_display_ui": False,
         "automations_v2": False,
         "splittable_terminal_view_ui": False,
-        "shims_page": False,
+        "shims_page": True,
     }
 
 
@@ -41,7 +46,11 @@ def test_resolves_comma_separated_enabled_set() -> None:
 
     assert flags.enabled(Feature.USAGE_PAGE)
     assert flags.enabled(Feature.HARNESS_INSTALL)
-    assert flags.enabled_names() == ("claude_osc_status", "harness_install", "usage_page")
+    assert flags.enabled_names() == (
+        "claude_osc_status",
+        "harness_install",
+        *_DISTRIBUTION_DEFAULTS,
+    )
 
 
 @pytest.mark.parametrize(
@@ -55,11 +64,17 @@ def test_resolves_comma_separated_enabled_set() -> None:
 def test_explicit_disable_wins_and_preserves_other_features(features: str) -> None:
     flags = resolve_feature_flags({FEATURES_ENV_VAR: f"usage_page,{features}"})
 
-    assert flags.enabled_names() == ("usage_page",)
+    assert flags.enabled_names() == _DISTRIBUTION_DEFAULTS
 
 
 def test_default_off_features_can_also_be_explicitly_disabled() -> None:
-    flags = resolve_feature_flags({FEATURES_ENV_VAR: "usage_page,-usage_page"})
+    flags = resolve_feature_flags({FEATURES_ENV_VAR: "harness_install,-harness_install"})
+
+    assert flags.enabled_names() == ("claude_osc_status", *_DISTRIBUTION_DEFAULTS)
+
+
+def test_distribution_defaults_can_be_switched_off() -> None:
+    flags = resolve_feature_flags({FEATURES_ENV_VAR: "-usage_page,-shims_page,-subscriptions"})
 
     assert flags.enabled_names() == ("claude_osc_status",)
 
@@ -80,7 +95,7 @@ def test_canvas_is_a_frontend_visible_feature() -> None:
 
     assert flags.enabled(Feature.CANVAS)
     assert flags.frontend_dict()["canvas"] is True
-    assert flags.enabled_names() == ("canvas", "claude_osc_status")
+    assert flags.enabled_names() == ("canvas", "claude_osc_status", *_DISTRIBUTION_DEFAULTS)
 
 
 def test_shims_page_is_a_frontend_visible_feature() -> None:

@@ -88,7 +88,7 @@ async def test_info_returns_expected_fields(client: httpx.AsyncClient) -> None:
     assert isinstance(data["databricks_features"], bool)
     assert isinstance(data["managed_sandboxes_enabled"], bool)
     assert data["features"] == {
-        "usage_page": False,
+        "usage_page": True,
         "harness_install": False,
         "canvas": False,
         "arca_shutdown_warnings": False,
@@ -99,7 +99,7 @@ async def test_info_returns_expected_fields(client: httpx.AsyncClient) -> None:
         "grid_sessions_display_ui": False,
         "automations_v2": False,
         "splittable_terminal_view_ui": False,
-        "shims_page": False,
+        "shims_page": True,
     }
     # Compatibility field for frontend builds predating the nested map.
     assert data["harness_install_enabled"] is False

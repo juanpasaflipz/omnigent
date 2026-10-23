@@ -23,8 +23,8 @@ issue opened ──► foreman wakes ──► triager (low effort, read-only)
 ## Run it
 
 ```bash
-# 1. Subscriptions are behind a release flag.
-OMNIGENT_FEATURES=subscriptions omnigent server
+# 1. Start the server. Subscriptions are on by default in this distribution.
+omnigent server
 
 # 2. Point GitHub at the server (Settings → Webhooks on the repo):
 #    Payload URL  https://<your-server>/v1/events/github

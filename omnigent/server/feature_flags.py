@@ -74,6 +74,8 @@ FEATURE_DEFINITIONS: tuple[FeatureDefinition, ...] = (
         description="Web Usage page with cost timeline and breakdowns",
         owner="web",
         review_by_release="0.11.0",
+        # On by default in the flywheel distribution; upstream keeps it opt-in.
+        default_enabled=True,
     ),
     FeatureDefinition(
         feature=Feature.HARNESS_INSTALL,
@@ -135,12 +137,16 @@ FEATURE_DEFINITIONS: tuple[FeatureDefinition, ...] = (
         owner="server",
         review_by_release="0.24.0",
         frontend_visible=False,
+        # On by default in the flywheel distribution; upstream keeps it opt-in.
+        default_enabled=True,
     ),
     FeatureDefinition(
         feature=Feature.SHIMS_PAGE,
         description="Web Shims page listing registered shims, their firings and retirability",
         owner="web",
         review_by_release="0.24.0",
+        # On by default in the flywheel distribution; upstream keeps it opt-in.
+        default_enabled=True,
     ),
 )
 

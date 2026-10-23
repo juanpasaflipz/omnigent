@@ -98,10 +98,11 @@ curl -fsSL https://raw.githubusercontent.com/juanpasaflipz/omnigent/dist/scripts
 uv tool install --python 3.12 "git+https://github.com/juanpasaflipz/omnigent.git@dist"
 ```
 
-Turn on the flagged features when you start the server:
+The flywheel features are on by default. Switch one off with a minus sign:
 
 ```bash
-OMNIGENT_FEATURES=subscriptions,usage_page,shims_page omnigent server
+omnigent server                                  # everything on
+OMNIGENT_FEATURES=-subscriptions omnigent server # no event ingest routes
 ```
 
 [`FORK_PLAN.md`](FORK_PLAN.md) explains how the fork is maintained and where

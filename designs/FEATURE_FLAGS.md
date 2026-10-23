@@ -29,14 +29,14 @@ lifecycle metadata.
 | Key | Default | Owner | Review by | Purpose |
 | --- | --- | --- | --- | --- |
 | `automations_v2` | Off | Server | 0.20.0 | Shared backend/UI flag reserved for the automation rollout. Defining and exposing the flag does not change scheduling behavior by itself. |
-| `usage_page` | Off | Web | 0.11.0 | Exposes the web Usage route, sidebar navigation, timeline, cost breakdown details, and the Efficiency tab (`GET /v1/usage/efficiency` scorecard). The existing `GET /v1/usage` and `GET /v1/usage/efficiency` CLI APIs remain available while off. |
+| `usage_page` | On (flywheel distribution) | Web | 0.11.0 | Exposes the web Usage route, sidebar navigation, timeline, cost breakdown details, and the Efficiency tab (`GET /v1/usage/efficiency` scorecard). The existing `GET /v1/usage` and `GET /v1/usage/efficiency` CLI APIs remain available while off. |
 | `harness_install` | Off | Onboarding | 0.11.0 | Allows the web UI to install or configure supported harnesses on a connected host. |
 | `canvas` | Off | Web | 0.15.0 | Exposes the web Canvas route (`/canvas`) and its sidebar navigation: top-level sessions as draggable cards, one canvas per project. |
 | `custom_agents_settings_ui` | Off | Web | 0.18.0 | Exposes Custom agents settings when the server also advertises `agent_install`. |
 | `sidebar_grouping_ui` | Off | Web | 0.19.0 | Adds Grouping, Ordering and Show options to the sidebar filter menu, moves that menu to the Projects header, splits Shared sessions into their own section, lets a Status or Updated grouping replace the Projects, Shared and Sessions sections, and expands the session tooltip with Repo, PR and Created by. |
 | `claude_osc_status` | On | Runner | 0.20.0 | Uses Claude OSC 7501 reports for working status, with legacy file/pane fallback. Set on the host/runner; applies to newly launched Claude-native terminals after restart. Not exposed in `/v1/info`. |
-| `shims_page` | Off | Web | 0.24.0 | Exposes the web Shims route (`/shims`) and its sidebar navigation: every registered shim with its fire count, last firing, review-by version and retirable status. `GET /v1/shims` remains available while off. |
-| `subscriptions` | Off | Server | 0.24.0 | Mounts `POST /v1/events/github`, `POST /v1/events/webhook` and the `/v1/subscriptions` CRUD routes, and builds the in-process event bus that posts wake notices into subscribed sessions. The `sys_subscribe` agent tools still require `subscriptions: true` in the agent spec. Not exposed in `/v1/info`. |
+| `shims_page` | On (flywheel distribution) | Web | 0.24.0 | Exposes the web Shims route (`/shims`) and its sidebar navigation: every registered shim with its fire count, last firing, review-by version and retirable status. `GET /v1/shims` remains available while off. |
+| `subscriptions` | On (flywheel distribution) | Server | 0.24.0 | Mounts `POST /v1/events/github`, `POST /v1/events/webhook` and the `/v1/subscriptions` CRUD routes, and builds the in-process event bus that posts wake notices into subscribed sessions. The `sys_subscribe` agent tools still require `subscriptions: true` in the agent spec. Not exposed in `/v1/info`. |
 
 At the review release, each flag must be removed by making the feature
 unconditional, removing the feature, or moving a genuinely permanent operator
