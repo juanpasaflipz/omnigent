@@ -4,9 +4,11 @@ description: >-
   Deploy watcher. After a merge it subscribes to the deploy event for the
   service, then checks health and error signals and reports a verdict.
 
+# Health checks are short and mechanical, so the watcher runs at low reasoning
+# effort. Add `model: <id>` to pin a smaller model from your provider's catalog.
 executor:
   type: omnigent
-  model: claude-haiku-4-5-20251001
+  reasoning_effort: low
   config:
     harness: claude-sdk
 

@@ -4,12 +4,13 @@ description: >-
   Cheap, read-only bug triager. Turns an issue or a failing check into a
   severity, a cause hypothesis, the files involved, and a repro command.
 
-# A small model is enough for triage, and triage runs on every event. This is
-# the model-mix lever from the efficiency scorecard: pay for the frontier model
-# only where it changes the outcome.
+# Triage runs on every event, so it runs at low reasoning effort. This is the
+# efficiency lever from the scorecard: spend effort only where it changes the
+# outcome. To also move it to a smaller model, add `model: <id>` here using an
+# id from your provider's catalog.
 executor:
   type: omnigent
-  model: claude-haiku-4-5-20251001
+  reasoning_effort: low
   config:
     harness: claude-sdk
 

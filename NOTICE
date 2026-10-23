@@ -2,6 +2,11 @@ Copyright (2026) Databricks, Inc.
 
 This Software includes software developed at Databricks (https://www.databricks.com/) and its use is subject to the included LICENSE file.
 
+This distribution (https://github.com/juanpasaflipz/omnigent) adds the flywheel
+primitives described in designs/HARNESS_FLYWHEEL.md. Modifications are
+Copyright (2026) the flywheel distribution contributors and are licensed
+under the same Apache License 2.0 as the original work.
+
 ________________
 
 This Software contains code from the following open source projects, licensed under the Apache 2.0 license (https://www.apache.org/licenses/LICENSE-2.0):

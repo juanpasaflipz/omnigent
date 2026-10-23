@@ -5,7 +5,7 @@ One foreman owns a bug from report to verified deploy. It never polls: every
 step is woken by an event or by a worker finishing.
 
 ```
-issue opened ──► foreman wakes ──► triager (haiku, read-only)
+issue opened ──► foreman wakes ──► triager (low effort, read-only)
                                        │
                           severity ≥ medium + repro
                                        ▼
@@ -49,7 +49,7 @@ something happens.
 | Piece | Flywheel idea |
 | --- | --- |
 | `subscriptions: true` on the foreman and watcher | One `sys_subscribe` primitive instead of a tool per event source. No timers, no polling. |
-| `triager` and `watcher` on a small model, `fixer` on the frontier model | Model mix. Check `omnigent usage --efficiency` after a day: the per-model table shows where the money goes. |
+| `triager` and `watcher` at low reasoning effort, `fixer` at full effort | Effort and model mix. Pin a smaller model on the cheap workers with `model:` if your provider has one, then check `omnigent usage --efficiency` after a day: the per-model table shows where the money goes. |
 | `blast_radius` with `gate_pushes: true` on the foreman | Acting versus asking. The agent acts freely inside the sandbox and asks at the shared-state boundary. |
 | `cost_budget` on every agent | Trust. A runaway loop stops at a number you chose. |
 | The fixer's recording requirement | Proof, not claims. The PR carries a video the human can watch before merging. |

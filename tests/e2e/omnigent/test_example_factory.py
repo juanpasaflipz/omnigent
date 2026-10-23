@@ -6,7 +6,7 @@ LLM, no credentials — modeled on ``test_example_sentinel.py``.
 
 What breaks if this fails:
 - a worker is dropped or renamed (the foreman loses triage, fixing or watching),
-- the cheap workers lose their small-model pin (the model-mix lever disappears),
+- the cheap workers lose their low reasoning effort (the efficiency lever disappears),
 - the foreman or a read-only worker loses ``read_only_os`` (coordination stops
   being enforced at the policy layer),
 - the foreman stops gating pushes (merges no longer ask a human),
@@ -25,8 +25,6 @@ from omnigent.spec.types import AgentSpec
 
 # tests/e2e/omnigent/test_example_factory.py -> repo root is 3 parents up.
 _FACTORY_BUNDLE = Path(__file__).resolve().parents[3] / "examples" / "factory"
-
-_SMALL_MODEL = "claude-haiku-4-5-20251001"
 
 
 @pytest.fixture(scope="module")
@@ -53,13 +51,15 @@ def test_factory_name_and_workers(factory_spec: AgentSpec) -> None:
     assert harness == {"fixer": "claude-sdk", "triager": "claude-sdk", "watcher": "claude-sdk"}
 
 
-def test_factory_model_mix(factory_spec: AgentSpec) -> None:
+def test_factory_effort_mix(factory_spec: AgentSpec) -> None:
     by_name = {a.name: a for a in factory_spec.sub_agents}
-    assert by_name["triager"].executor.model == _SMALL_MODEL
-    assert by_name["watcher"].executor.model == _SMALL_MODEL
-    # The fixer is the one place the frontier model earns its cost.
-    assert by_name["fixer"].executor.model is None
-    assert factory_spec.executor.model is None
+    assert by_name["triager"].executor.reasoning_effort == "low"
+    assert by_name["watcher"].executor.reasoning_effort == "low"
+    # The fixer is the one place full effort earns its cost.
+    assert by_name["fixer"].executor.reasoning_effort is None
+    # No agent pins a model id; each resolves from the configured provider.
+    for spec in (factory_spec, *factory_spec.sub_agents):
+        assert spec.executor.model is None, spec.name
 
 
 def test_factory_foreman_asks_before_pushing(factory_spec: AgentSpec) -> None:

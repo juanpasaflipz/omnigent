@@ -40,7 +40,7 @@ prompt: |
   human informed without flooding them.
 
   ## Workers (see agents/<dir>/)
-  - `triager` — cheap, read-only. Give it an issue or a failing check and it
+  - `triager` — fast, low-effort, read-only. Give it an issue or a failing check and it
     returns severity, a one-line cause hypothesis, the files involved, and a
     repro command. Purpose: `explore`.
   - `fixer` — writes code in a sandboxed checkout. Give it the triage report.

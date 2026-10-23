@@ -85,6 +85,28 @@ is in [`designs/HARNESS_FLYWHEEL.md`](designs/HARNESS_FLYWHEEL.md).
   recording, asks a human before merging, and hands the merge to a deploy
   watcher. No polling anywhere.
 
+
+### Install the flywheel distribution
+
+This fork tracks upstream Omnigent and adds the primitives below on the `dist`
+branch. Install it the same way as upstream, pointed at the fork:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/juanpasaflipz/omnigent/dist/scripts/install_oss.sh \
+  | sh -s -- --repo https://github.com/juanpasaflipz/omnigent.git@dist
+# or, with uv directly:
+uv tool install --python 3.12 "git+https://github.com/juanpasaflipz/omnigent.git@dist"
+```
+
+Turn on the flagged features when you start the server:
+
+```bash
+OMNIGENT_FEATURES=subscriptions,usage_page,shims_page omnigent server
+```
+
+[`FORK_PLAN.md`](FORK_PLAN.md) explains how the fork is maintained and where
+it is going.
+
 ---
 
 ## Quick start

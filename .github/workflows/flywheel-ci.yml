@@ -1,0 +1,82 @@
+name: Flywheel CI
+
+# The fork's own gate for the flywheel primitives (designs/HARNESS_FLYWHEEL.md).
+# Upstream's lint/ci workflows still run their full suites; this job is the
+# fast, credential-free check that every flywheel branch and the `dist`
+# integration branch must pass. Never runs on the upstream repository.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dist
+      - 'flywheel/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OMNIGENT_SKIP_WEB_UI: "true"
+  UV_INDEX_URL: https://pypi.org/simple
+
+concurrency:
+  group: flywheel-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flywheel:
+    name: Flywheel tests
+    if: github.repository != 'omnigent-ai/omnigent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version-file: ".python-version"
+
+      - name: Set up uv
+        uses: ./.github/actions/setup-uv
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --group dev
+
+      - name: Ruff
+        run: |
+          uv run --no-sync ruff check .
+          uv run --no-sync ruff format --check .
+
+      - name: Flywheel tests
+        # Paths are listed explicitly so a missing file fails loudly once added
+        # here, while paths a later phase introduces are picked up when present.
+        run: |
+          candidates=(
+            tests/runtime/test_shims.py
+            tests/runtime/test_shim_review_gate.py
+            tests/server/test_shims_route.py
+            tests/server/events
+            tests/server/test_subscriptions_routes.py
+            tests/runner/test_subscription_tool_dispatch.py
+            tests/stores/test_subscription_store.py
+            tests/server/test_usage_efficiency.py
+            tests/server/routes/test_usage_efficiency_route.py
+            tests/cli/test_usage_efficiency.py
+            tests/harness_bench/test_cost_per_solved_task.py
+            tests/e2e/omnigent/test_example_factory.py
+            tests/runtime/test_prompt.py
+            tests/spec/test_parser.py
+            tests/tools/test_manager.py
+            tests/server/test_feature_flags.py
+            tests/runner/test_scheduled_task_tool_dispatch.py
+          )
+          paths=()
+          for candidate in "${candidates[@]}"; do
+            [ -e "$candidate" ] && paths+=("$candidate")
+          done
+          uv run --no-sync pytest "${paths[@]}" --reruns 0 -q -p no:cacheprovider
