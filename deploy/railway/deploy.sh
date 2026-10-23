@@ -17,7 +17,7 @@
 set -euo pipefail
 
 project_name="${1:-wakevane}"
-repo="${OMNIGENT_REPO:-juanpasaflipz/omnigent}"
+repo="${OMNIGENT_REPO:-juanpasaflipz/wakevane}"
 branch="${OMNIGENT_BRANCH:-dist}"
 service="omnigent"
 

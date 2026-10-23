@@ -2,7 +2,7 @@ Copyright (2026) Databricks, Inc.
 
 This Software includes software developed at Databricks (https://www.databricks.com/) and its use is subject to the included LICENSE file.
 
-WakeVane (https://github.com/juanpasaflipz/omnigent) is a distribution of
+WakeVane (https://github.com/juanpasaflipz/wakevane) is a distribution of
 Omnigent that adds the changes listed in MODIFICATIONS.md. "WakeVane" is the
 name of this distribution, not of the original work. Modifications are
 Copyright (2026) the WakeVane contributors and are licensed under the same

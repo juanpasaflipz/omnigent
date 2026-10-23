@@ -14,7 +14,7 @@ to keep, what to add, how to run it, and how to tell the story.
 | Phase | State | What exists | What is left |
 | --- | --- | --- | --- |
 | 0 | Done | Subscriptions, shim registry, efficiency scorecard, factory and shim-janitor examples, design doc | Nothing |
-| 1 | Done | Fork published, `dist` integration branch, first tag, install from `@dist` verified on a clean tool dir, NOTICE line, Flywheel CI workflow, launch post in `docs/blog/` | Enable Actions on the fork, then run `scripts/fork_trim_workflows.sh juanpasaflipz/omnigent` |
+| 1 | Done | Fork published, `dist` integration branch, first tag, install from `@dist` verified on a clean tool dir, NOTICE line, Flywheel CI workflow, launch post in `docs/blog/` | Enable Actions on the fork, then run `scripts/fork_trim_workflows.sh juanpasaflipz/wakevane` |
 | 2 | Built, not proven live | Subscriptions launch new sessions through the scheduled-task fire path, with an approval gate for agent-created launches; Slack forwards messages as `slack.message` events; GitHub App webhook setup documented | One live run: a GitHub App webhook on a test repo opening an issue that starts a triage session |
 | 3 | Built, janitor not scheduled | Efficiency tab on the Usage page (`usage_page` flag), Shims page (`shims_page` flag), retirement only after a full observation window | Deploy a server and create the weekly janitor automation from `examples/shim-janitor/README.md` |
 | 4 | Built, no live numbers | `cost_per_solved_task` bench probe with measurement rendering; offline runs report SKIPPED | One live bench run with gateway credentials for claude-native and codex-native |

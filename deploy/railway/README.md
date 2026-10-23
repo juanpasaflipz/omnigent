@@ -13,7 +13,7 @@ deploy/railway/deploy.sh my-wakevane
 ```
 
 The script creates the project, adds Postgres, adds an `omnigent` service built
-from `juanpasaflipz/omnigent@dist`, wires `DATABASE_URL`, attaches a volume at
+from `juanpasaflipz/wakevane@dist`, wires `DATABASE_URL`, attaches a volume at
 `/data`, generates an admin password, a GitHub webhook secret, and the credential
 encryption key, and prints a public domain. The first build compiles the web UI and the server and takes
 several minutes; follow it with `railway logs --build`. Sign in as `admin` with

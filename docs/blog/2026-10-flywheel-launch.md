@@ -72,7 +72,7 @@ polls.
 ## Try it
 
 ```bash
-uv tool install --python 3.12 "git+https://github.com/juanpasaflipz/omnigent.git@dist"
+uv tool install --python 3.12 "git+https://github.com/juanpasaflipz/wakevane.git@dist"
 omnigent server
 omnigent run examples/factory
 ```

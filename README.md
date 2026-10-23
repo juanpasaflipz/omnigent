@@ -24,6 +24,9 @@ keep their upstream names so the two stay easy to merge.
 
 </div>
 
+**Using WakeVane in a browser?** Start with the [browser user guide](docs/WEB_USER_GUIDE.md)
+for sign-in, your first session, approvals, files, sharing, and troubleshooting.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/omnigent-ai/omnigent/main/docs/images/omnigent-desktop.png" alt="The Omnigent desktop app: starting a new session, with pinned and project-grouped sessions in the sidebar" width="720" />
 </p>
@@ -101,10 +104,10 @@ WakeVane tracks upstream Omnigent and ships from the `dist` branch. Install it
 the same way as upstream, pointed at this repository:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/juanpasaflipz/omnigent/dist/scripts/install_oss.sh \
-  | sh -s -- --repo https://github.com/juanpasaflipz/omnigent.git@dist
+curl -fsSL https://raw.githubusercontent.com/juanpasaflipz/wakevane/dist/scripts/install_oss.sh \
+  | sh -s -- --repo https://github.com/juanpasaflipz/wakevane.git@dist
 # or, with uv directly:
-uv tool install --python 3.12 "git+https://github.com/juanpasaflipz/omnigent.git@dist"
+uv tool install --python 3.12 "git+https://github.com/juanpasaflipz/wakevane.git@dist"
 ```
 
 The flywheel features are on by default. Switch one off with a minus sign:
