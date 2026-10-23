@@ -37,6 +37,14 @@ class Driver(Protocol):
         """Plain turn asking the model to echo *marker*. Used by basic_turn
         and model_override."""
 
+    async def run_task_turn(self, prompt: str) -> TurnResult:
+        """Run one arbitrary task *prompt* for the cost_per_solved_task probe.
+
+        ``text`` must hold only this turn's reply, and ``total_cost_usd`` /
+        ``total_tokens`` / ``usage`` only this turn's spend (a server-backed
+        driver subtracts the session snapshot taken before the turn). A driver
+        without this method makes the probe SKIP."""
+
     async def run_streaming_turn(self) -> TurnResult:
         """A multi-token turn; the result's ``text_delta_count`` reflects
         whether the transport streamed token-level deltas."""

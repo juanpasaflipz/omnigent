@@ -17,6 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -38,6 +39,8 @@ from tests.harness_bench.driver import (
     ProvisioningError,
     TurnResult,
     fill_snapshot_cost,
+    fill_snapshot_usage_delta,
+    settled_usage_snapshot,
 )
 from tests.harness_bench.full_server import spawn_omnigent_server
 from tests.harness_bench.mcp_tools import is_target_omnigent_mcp_tool
@@ -273,6 +276,9 @@ class NativeTuiDriver:
     async def run_basic_turn(self, marker: str) -> TurnResult:
         prompt = f"Reply with exactly the literal string {marker} and nothing else."
         return await asyncio.to_thread(self._drive_turn, prompt)
+
+    async def run_task_turn(self, prompt: str) -> TurnResult:
+        return await asyncio.to_thread(self._drive_task_turn, prompt)
 
     async def run_streaming_turn(self) -> TurnResult:
         return await asyncio.to_thread(self._drive_turn, _STREAM_PROMPT, count_deltas=True)
@@ -540,6 +546,37 @@ class NativeTuiDriver:
         result = self._drive_turn(REASONING_PROMPT, count_deltas=True)
         result.reasoning_item_count = max(0, self._reasoning_item_count() - before)
         return result
+
+    def _drive_task_turn(self, prompt: str) -> TurnResult:
+        """Drive one task turn and attribute only the usage it added.
+
+        ``_drive_turn`` already scopes the reply to this turn's new assistant
+        item; usage is cumulative on the session, so it is the snapshot delta.
+        Native reporters post usage asynchronously, so the after-snapshot waits
+        briefly for the counters to move.
+        """
+        before = self._session_snapshot()
+        result = self._drive_turn(prompt)
+        if not result.completed or before is None:
+            return result
+        after = settled_usage_snapshot(
+            lambda: self._session_snapshot() or before,
+            before,
+            poll_interval=_POLL_INTERVAL_S,
+        )
+        result.total_cost_usd = None
+        result.total_tokens = None
+        fill_snapshot_usage_delta(result, before, after)
+        return result
+
+    def _session_snapshot(self) -> dict[str, Any] | None:
+        """Return the session snapshot, or ``None`` when it cannot be read."""
+        assert self._client is not None
+        try:
+            snap = self._client.get(f"/v1/sessions/{self._session_id}", timeout=15.0)
+        except httpx.HTTPError:
+            return None
+        return snap.json() if snap.status_code == 200 else None
 
     def _fill_cost_from_snapshot(self, result: TurnResult) -> None:
         """Read cumulative usage/cost off the session snapshot after a turn.

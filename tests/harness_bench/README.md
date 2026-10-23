@@ -24,6 +24,10 @@ python -m tests.harness_bench --harness codex
 # Run only Reasoning (plus its automatic Basic turn prerequisite).
 python -m tests.harness_bench --harness codex --dimension reasoning
 
+# Compare cost per solved task across harnesses.
+python -m tests.harness_bench --live --dimension cost_per_solved_task \
+  --harness claude-native --harness codex-native --json --report cost.json
+
 # Pin one harness to an exact model for this run.
 python -m tests.harness_bench --harness codex=system.ai.gpt-5-6-sol
 
@@ -124,6 +128,11 @@ This option does not install a Resolve or repository-wide gate.
 - `--markdown`: GitHub-flavored table for docs and pull requests.
 - `--json`: machine-readable output for diffing runs or regenerating docs.
 
+Measuring probes (currently Cost per solved task) also attach a
+`measurement`: a short number beside the glyph in the Rich grid, a
+Measurements section in text and Markdown, and a `measurement` object on the
+JSON cell. Other cells are unchanged.
+
 Each row includes the transport that actually ran it, such as
 `claude-sdk [full-server]` or `kimi-native [native]`. Under `--rich`, the live
 table is rendered on stderr; the stdout report avoids printing the grid twice,
@@ -156,6 +165,7 @@ A profile's `transport` is a harness-family marker. The resolved driver is:
 | **Policy ASK** | An ask policy raises an approval elicitation. | P1 |
 | **Model override** | The harness accepts and completes with the requested model; `SKIPPED` when the transport never applies it (native-tui). | P0 |
 | **Cost tracking** | A completed turn reports priced cost (`SUPPORTED`) or tokens only (`PARTIAL`). | P1 |
+| **Cost per solved task** | A fixed three-task suite is checked from the final replies and its spend divided by the tasks solved. Priced is `SUPPORTED`; unpriced or nothing solved is `PARTIAL`. Reports a `measurement`. | P1 |
 | **Interrupt** | A running turn stops after interruption. | P0 |
 
 Verdicts are `SUPPORTED` (`✓`), `PARTIAL` (`~`), `UNSUPPORTED` (`✗`),
@@ -174,6 +184,7 @@ transport; it does not claim the harness lacks the capability.
 | Policy DENY | Fixed policy in the agent spec | Session CEL policy + native policy hook | Not observable |
 | Policy ALLOW / ASK | Fixed policy; ASK observes and resolves an elicitation | Temporary session CEL policy; ASK observes and resolves an elicitation | Not observable |
 | Cost tracking | Session snapshot | Session snapshot when the vendor forwards usage | Completed-response usage when forwarded |
+| Cost per solved task | Session snapshot delta per task | Session snapshot delta per task when the vendor forwards usage | Per-turn completed-response usage when forwarded |
 
 The bench is a headless client of the server API. It verifies the contract the
 web application consumes, not browser rendering; UI presentation belongs in

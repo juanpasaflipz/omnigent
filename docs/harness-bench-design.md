@@ -7,7 +7,7 @@ instead of a human hand-maintaining a spreadsheet and hoping it still reflects
 reality.
 
 > **Status:** shipped and in use. The bench on `main` has three transport
-> drivers, six P0 probes, five report-only P1 probes, automatic live/offline
+> drivers, six P0 probes, seven report-only P1 probes, automatic live/offline
 > selection, and a capability-derived matrix that has already caught and
 > corrected real declaration drift. See
 > [Current state](#current-state-shipped) for what is live vs. still open. The
@@ -212,6 +212,7 @@ Validated for presence and shape only: `Owner`, `Transport`, `Implementation`,
 | Policy ASK (P1) | apply ask and require an elicitation/approval request |
 | Model override (P0) | validate the requested harness/model pair and complete a turn |
 | Cost tracking (P1) | read priced cost or token usage from the turn/session |
+| Cost per solved task (P1, measured) | run a fixed three-task suite (arithmetic, word reversal, word sort), check each final reply, and divide the suite's total spend by the tasks solved; see [Cost per solved task](#cost-per-solved-task) |
 | Interrupt (P0) | interrupt a long turn and require cancellation or early termination |
 
 Planned dimensions are steering, live queue, resume, images, and compaction.
@@ -282,8 +283,14 @@ The bench on `main` includes:
 
 - **Six P0 probes:** Basic turn, Streaming, Tool calling, Policy DENY, Model
   override, and Interrupt.
-- **Six P1 probes:** Fork replay, Reasoning, Omnigent MCP, Policy ALLOW, Policy ASK, and Cost tracking. P1 verdicts
-  are report-only and do not gate the same way as P0 declarations.
+- **Seven P1 probes:** Fork replay, Reasoning, Omnigent MCP, Policy ALLOW,
+  Policy ASK, Cost tracking, and Cost per solved task. P1 verdicts are
+  report-only and do not gate the same way as P0 declarations.
+- **Measurements in the matrix:** a probe may attach a numeric
+  `measurement` to its verdict. Cost per solved task is the first: its number
+  appears beside the glyph in the Rich grid, in a Measurements section of the
+  text and Markdown reports, and as a `measurement` object on the JSON cell.
+  Cells without one keep their previous shape.
 - **Three transport drivers:** `full-server`, `native-tui`, and `sdk-inproc`,
   selected by harness family with `--transport` and `--fast` overrides.
 - **Automatic live selection:** without an explicit mode, the CLI runs live
@@ -372,11 +379,81 @@ stream, the bench flags a real drift on the next run, rather than a false
 | Policy DENY | Not observable | Fixed policy blocks the builtin | Session CEL policy triggers the native policy hook |
 | Policy ALLOW / ASK | Not observable | Fixed policy; ASK observes and resolves an elicitation | Temporary session CEL policy; ASK observes and resolves an elicitation |
 | Cost tracking | Completed-response usage when forwarded | Session snapshot usage/cost | Session snapshot when the vendor forwards usage |
+| Cost per solved task | Per-turn completed-response usage when forwarded | Session snapshot delta per task | Session snapshot delta per task when the vendor forwards usage |
 
 `full-server` remains the SDK default because it covers the deployed server
 path and all three policy actions. `--fast` trades that policy coverage for
 lower startup cost. `native-tui` now has real Tool calling and all three policy
 action probes through the native hook path.
+
+## Cost per solved task
+
+`cost_tracking` answers "can an operator see what a turn spent?". Cost per
+solved task uses that to put efficiency in the matrix: what does a harness
+spend to produce a correct answer?
+
+**Task suite.** Three fixed tasks that need no filesystem or tools, so every
+transport can run them, with answers checked from the final text
+(`tests/harness_bench/probes/cost_per_solved_task.py:TASKS`):
+
+| Task | Prompt (abridged) | Expected |
+| --- | --- | --- |
+| `arithmetic` | What is 17 * 23? Reply with only the number. | `391` |
+| `reverse` | Reverse the letters of the word 'harness'. | `ssenrah` |
+| `sort` | Sort pear, apple, fig alphabetically, comma-separated. | `apple, fig, pear` |
+
+A reply is solved when the whole reply, or its last non-empty line, matches
+after normalization: case-insensitive, surrounding whitespace, markdown and
+quote wrappers and a trailing `.`/`!` stripped, internal whitespace collapsed
+and commas spaced as `", "`. An answer buried mid-sentence does not count.
+
+**Measurement.** Each task's spend is attributed by the driver: the wrap's
+per-turn usage on `sdk-inproc`, and the difference between session snapshots
+taken before and after the turn on `full-server` and `native-tui` (the driver
+waits up to 5 s for asynchronously reported usage). The probe reports:
+
+```text
+solved, attempted
+total_cost_usd            = sum of priced task costs (all attempts, solved or not)
+cost_per_solved_task_usd  = total_cost_usd / solved
+tokens_per_solved_task    = total tokens / solved
+cache_hit_rate            = cache_read / (input + cache_read + cache_creation)
+```
+
+The cache hit rate reuses `omnigent/server/usage_efficiency.py`, so it means
+the same as in `omnigent usage --efficiency`. A value is `null` when its
+denominator is zero. Failed attempts still count toward spend, so a harness
+that is cheap per turn but often wrong does not look cheap per solved task.
+
+**Verdicts.**
+
+| Verdict | When |
+| --- | --- |
+| `SUPPORTED` | At least one task solved and spend priced; carries the USD cost per solved task |
+| `PARTIAL` | Tasks solved but the model is unpriced (tokens only), or usage observed but nothing solved |
+| `SKIPPED` | The driver cannot run task prompts, a turn hit an infrastructure failure or timed out, or no usage was surfaced; offline (`--no-live`) runs also skip |
+
+"Nothing solved" is `PARTIAL` rather than `UNSUPPORTED`, the same verdict
+`cost_tracking` uses for a degraded but real observation: a wrong answer to an
+arithmetic question does not show that the harness lacks a capability. No
+harness declares this dimension, so it never produces `DRIFT`.
+
+**Ordering.** The probe runs immediately after Basic turn, so every transport
+measures it on a session that holds only that one short exchange. Later probes
+would add long essays and tool turns to the context and make the number depend
+on which dimensions were selected.
+
+**Running it.** Compare harnesses on the same slice, live, and keep the JSON:
+
+```
+python -m tests.harness_bench --live --dimension cost_per_solved_task \
+  --harness claude-native --harness codex-native --json --report cost.json
+```
+
+Each harness spends three short turns plus the Basic turn prerequisite. The
+model, prompt cache state, and vendor CLI version all move the number, so
+compare runs taken close together and repeat a run before reading a small
+difference as real.
 
 ## Plugin seamlessness: where it is and isn't
 
