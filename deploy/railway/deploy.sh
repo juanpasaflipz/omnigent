@@ -42,6 +42,7 @@ echo "==> Adding an empty ${service} service"
 railway add --service "$service" \
   --variables 'DATABASE_URL=${{Postgres.DATABASE_URL}}' \
   --variables "OMNIGENT_AUTH_PROVIDER=accounts" \
+  --variables "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME=admin" \
   --variables "OMNIGENT_ACCOUNTS_AUTO_OPEN=0" \
   --variables "OMNIGENT_DATA_DIR=/data/omnigent" \
   --variables "OMNIGENT_ADMIN_CREDENTIALS_PATH=/data/admin-credentials" \

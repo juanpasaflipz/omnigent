@@ -48,6 +48,7 @@ default; nothing needs to be set to enable them.
    | Variable | Value |
    | --- | --- |
    | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
+   | `OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME` | `admin` |
    | `OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD` | output of `openssl rand -hex 16` |
    | `OMNIGENT_GITHUB_WEBHOOK_SECRET` | output of `openssl rand -hex 32` |
    | `OMNIGENT_DATA_DIR` | `/data/omnigent` |
@@ -55,6 +56,9 @@ default; nothing needs to be set to enable them.
 
 3. Add a **Volume** to the service mounted at `/data`.
 4. Under **Settings, Networking**, generate a domain. Sign in as `admin`.
+
+> **Set the admin username too.** Without `OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME`
+> the first admin is named after the container's OS user, which is `root`.
 
 > **Set the admin password before the first boot.** While no account exists,
 > `POST /auth/setup` is unauthenticated, so an instance exposed without
